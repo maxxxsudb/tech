@@ -13,13 +13,16 @@
 ## Шаг 1. Скачать архив (на машине с интернетом)
 
 ```bash
-wget -O infinity.zip "https://grafana.com/api/plugins/yesoreyeram-infinity-datasource/versions/3.11.1/download?os=linux&arch=amd64"
+curl -fL -o infinity.zip "https://grafana.com/api/plugins/yesoreyeram-infinity-datasource/versions/3.11.1/download?os=linux&arch=amd64"
 md5sum infinity.zip
 ```
 
 Ожидается: `f6d6b2cc9ef763f554d546d8f3ac35cb`.
 
 > Ссылку обязательно брать **в кавычки**, иначе bash обрежет её на `&` и скачается другой файл.
+>
+> Флаг `-L` обязателен: grafana.com отдаёт файл через перенаправление, и без `-L` curl сохранит
+> пустой ответ вместо архива. `-f` не даёт сохранить страницу с ошибкой под видом архива.
 
 ## Шаг 2. Перенести `infinity.zip` на сервер и проверить ещё раз
 
