@@ -75,6 +75,8 @@ curl -H "Content-Type: application/json" -X POST \
 
 ## Среда без интернета
 
+Пошаговая установка одного плагина Infinity: [INFINITY-OFFLINE.md](INFINITY-OFFLINE.md).
+
 Grafana не обязана качать Infinity при старте: плагин можно положить файлами.
 
 1. На машине с интернетом: `./scripts/offline-bundle.sh`. Скрипт скачает плагин
