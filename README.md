@@ -73,6 +73,29 @@ curl -H "Content-Type: application/json" -X POST \
   http://localhost:3001/generate-pdf
 ```
 
+## Среда без интернета
+
+Grafana не обязана качать Infinity при старте: плагин можно положить файлами.
+
+1. На машине с интернетом: `./scripts/offline-bundle.sh`. Скрипт скачает плагин
+   (`OS_ARCH=linux-arm64` для ARM), выгрузит все Docker-образы в `offline/images.tar`
+   и соберёт `../offline-bundle.tar.gz`.
+2. Перенести архив, на целевой машине:
+
+   ```bash
+   tar xzf offline-bundle.tar.gz && cd tech
+   docker load -i offline/images.tar
+   docker compose -f docker-compose.yml -f docker-compose.offline.yml up -d
+   ```
+
+`docker-compose.offline.yml` монтирует `offline/plugins` в `/var/lib/grafana/plugins`,
+отключает установку плагинов при старте (`GF_PLUGINS_PREINSTALL_DISABLED`) и проверки
+обновлений. Проверено: Grafana в сети без выхода наружу регистрирует Infinity и отдаёт данные.
+
+Для Grafana без Docker: распаковать zip плагина в каталог плагинов
+(по умолчанию `/var/lib/grafana/plugins`) и перезапустить Grafana. Плагин подписан Grafana,
+подпись проверяется локально, интернет не нужен.
+
 ## Остановка
 
 ```bash
