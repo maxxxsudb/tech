@@ -76,6 +76,7 @@ curl -H "Content-Type: application/json" -X POST \
 ## Среда без интернета
 
 Пошаговая установка одного плагина Infinity: [INFINITY-OFFLINE.md](INFINITY-OFFLINE.md).
+Пошаговая установка экспорта в PDF: [PDF-EXPORT-OFFLINE.md](PDF-EXPORT-OFFLINE.md).
 
 Grafana не обязана качать Infinity при старте: плагин можно положить файлами.
 
