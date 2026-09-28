@@ -1,0 +1,90 @@
+name: tech
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.136.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - loki
+
+  loki:
+    image: grafana/loki:3.6.0
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    # В образе 3.6 каталог /loki недоступен на запись пользователю loki
+    user: "0"
+    volumes:
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.4
+    command:
+      - start-dev
+      - --features=opentelemetry-logs
+      - --telemetry-logs-enabled=true
+      - --telemetry-endpoint=http://otel-collector:4317
+      - --telemetry-protocol=grpc
+      - --telemetry-logs-level=info
+      - --telemetry-service-name=keycloak
+      # Успешные события (LOGIN, CODE_TO_TOKEN...) пишутся в лог с уровнем INFO, а не DEBUG
+      - --spi-events-listener--jboss-logging--success-level=info
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    depends_on:
+      - otel-collector
+
+  mock-api:
+    image: nginx:1.29-alpine
+    volumes:
+      - ./mock-api:/usr/share/nginx/html:ro
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_PLUGINS_PREINSTALL_SYNC: yesoreyeram-infinity-datasource
+      # Нужно для кнопки экспорта в PDF (HTML/JS в text-панели)
+      GF_PANELS_DISABLE_SANITIZE_HTML: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+      # Порт экспортёра: он живёт в сетевом неймспейсе grafana
+      - "3001:3001"
+    depends_on:
+      - loki
+      - mock-api
+
+  grafana-export-to-pdf:
+    build: ./grafana-export-to-pdf
+    # Общий сетевой неймспейс с grafana: URL из браузера (http://localhost:3000/d/...)
+    # внутри экспортёра тоже указывает на Grafana.
+    network_mode: "service:grafana"
+    environment:
+      GRAFANA_USER: admin
+      GRAFANA_PASSWORD: admin
+      GRAFANA_SERVICE_ACCOUNT: "false"
+      EXPORT_SERVER_PORT: "3001"
+      FORCE_KIOSK_MODE: "true"
+      PDF_WIDTH_PX: "1920"
+      PDF_HEIGHT_PX: "auto"
+      NAVIGATION_TIMEOUT: "120000"
+      PANEL_RENDER_TIMEOUT: "8000"
+    volumes:
+      - ./output:/usr/src/app/output
+    depends_on:
+      - grafana
+
+volumes:
+  loki-data:

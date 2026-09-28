@@ -1,0 +1,1031 @@
+
+<script>
+    (function () {
+        if (window.gfexpAlreadyInjected) return;
+        window.gfexpAlreadyInjected = true;
+
+        window.gfexpPdfGenerationServerUrl = 'http://localhost:3001';
+        window.gfexpLanguage = 'en'; // fr or en
+
+        window.gfexpLangs = {
+            fr: {
+                "exportAsPdf": "Exporter en PDF",
+                "exportDashboardAsPdf": "Exporter le tableau de bord en PDF",
+                "exportDownload": "Générer et télécharger un fichier PDF contenant la représentation visuelle de votre tableau de bord.",
+                "exporting": "Exportation en cours",
+                "generatingPdf": "Génération du PDF",
+                "serverUnavailable": "Serveur indisponible",
+                "pleaseCheckServer": "Veuillez vérifier l'état du serveur de génération de PDF.",
+                "error": "Une erreur s'est produite lors de l'exportation.",
+                "success": "Exportation réussie",
+                "youCanDownload" : "Vous pouvez maintenant télécharger le PDF.",
+                "download": "Télécharger",
+                "cancel": "Annuler",
+                "lockTimeRange": "Verrouiller la plage horaire",
+                "absoluteTimeRange": "Changer la plage horaire relative actuelle en une plage horaire absolue.",
+                "current": "Actuel",
+                "dark": "Sombre",
+                "light": "Clair",
+                "theme": "Thème",
+                "exportingPdf": "Exportation en PDF",
+                "downloadPdf": "Télécharger le PDF",
+                "generatePdf": "Générer le PDF",
+                "retry": "Réessayer",
+                "tryingToConnect": "Tentative de connexion au serveur PDF...",
+            },
+            en: {
+                "exportAsPdf": "Export as PDF",
+                "exportDashboardAsPdf": "Export dashboard as PDF",
+                "exportDownload": "Generate and download a PDF file containing the visual representation of your dashboard.",
+                "exporting": "Exporting",
+                "generatingPdf": "Generating PDF",
+                "serverUnavailable": "Server unavailable",
+                "pleaseCheckServer": "Please check the PDF generation server status.",
+                "error": "An error occurred during export.",
+                "success": "Export successful",
+                "youCanDownload": "You can now download the PDF.",
+                "download": "Download",
+                "cancel": "Cancel",
+                "lockTimeRange": "Lock time range",
+                "absoluteTimeRange": "Change the current relative time range to an absolute time range.",
+                "current": "Current",
+                "dark": "Dark",
+                "light": "Light",
+                "theme": "Theme",
+                "exportingPdf": "Exporting PDF",
+                "downloadPdf": "Download PDF",
+                "generatePdf": "Generate PDF",
+                "retry": "Retry",
+                "tryingToConnect": "Trying to connect to the PDF server...",
+            }
+        };
+
+        window.gfexpLang = Object.keys(window.gfexpLangs).includes(window.gfexpLanguage) ? window.gfexpLanguage : 'en';
+    })();
+</script>
+
+<!-- Dashboard title and date display -->
+<!-- This section displays the dashboard title and the selected date range -->
+<!-- Necessary when EXTRACT_DATE_AND_DASHBOARD_NAME_FROM_HTML_PANEL_ELEMENTS is enabled -->
+<!-- You can remove this section if you don't need it -->
+<style>
+    div[data-testid*="panel content"] > div:has(.markdown-html [id^="gfexp_"]) {
+        contain: unset!important;
+    }
+
+    div[data-testid*="panel content"] div:has(> .markdown-html) {
+        overflow:visible;
+    }
+
+    #gfexp_display_container {
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+    }
+
+    #gfexp_display_actual_dashboard_title {
+        margin: 0;
+        line-height: 1rem;
+    }
+
+    #gfexp_display_actual_date {
+        margin: 0;
+        line-height: 1rem;
+        text-transform:capitalize;
+    }
+</style>
+
+<div id="gfexp_display_container">
+    <p id="gfexp_display_actual_dashboard_title">${__dashboard}</p>
+    <p id="gfexp_display_actual_date"></p>
+</div>
+<!-- End of dashboard title and date display -->
+
+<script>
+    (function() {
+        function formatTimestamp(timestamp) {
+            const date = new Date(timestamp);
+            const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+            return date.toLocaleDateString( window.gfexpLang === 'fr' ? 'fr-FR' : 'en-US', options);
+        }
+
+        let fromTimestampGrafana = ${__from};
+        let toTimestampGrafana = ${__to};
+
+        document.getElementById("gfexp_display_actual_date").innerHTML = formatTimestamp(fromTimestampGrafana) + " - " + formatTimestamp(toTimestampGrafana);
+    })();
+</script>
+
+<div id="GFEXP_marker">
+    <!-- This is a marker to enable HTML injection in this panel -->
+</div>
+
+<script>
+
+    (function waitForGFEXP_Marker() {
+        const marker = document.getElementById('GFEXP_marker');
+        if (!marker) {
+            setTimeout(waitForGFEXP_Marker, 100);
+            return;
+        }
+
+        console.log('[GFEXP] Marker détecté, vérification du serveur...');
+        console.log(window.gfexpLang)
+
+        const observer = new MutationObserver(() => {
+            const currentStatus = marker.getAttribute('data-gfexp-server-status');
+            const pdfUrl = marker.getAttribute('data-gfexp-pdf-url');
+            const isWaiting = marker.getAttribute('data-gfexp-waiting') === 'true';
+            const error = marker.getAttribute('data-gfexp-error');
+            const pdfButton = document.querySelector('button.GFEXP_generatePdf');
+            const errorContainer = document.getElementById('GFEXP_error');
+            const successContainer = document.getElementById('GFEXP_success');
+
+            if (currentStatus === 'failed') {
+                if (pdfButton) {
+                    pdfButton.setAttribute('disabled', 'true');
+                    pdfButton.classList.remove('GFEXP_waiting');
+                }
+                if (errorContainer) {
+                    errorContainer.innerHTML = `
+                <div class="GFEXP_error_content">
+                    <h3>${window.gfexpLangs[window.gfexpLang].serverUnavailable}</h3>
+                    <p>${window.gfexpLangs[window.gfexpLang].pleaseCheckServer}</p>
+                    <button id="GFEXP_retry_button" style="margin-top: 1rem;" onclick="window.checkStatus()">
+                    <svg viewBox="0 0 24 24" version="1.1" style="width:17px;height:17px;">
+                        <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+                            <g id="Reload">
+                                <rect id="Rectangle" fill-rule="nonzero" x="0" y="0" width="24" height="24"></rect>
+                                <path d="M4,13 C4,17.4183 7.58172,21 12,21 C16.4183,21 20,17.4183 20,13 C20,8.58172 16.4183,5 12,5 C10.4407,5 8.98566,5.44609 7.75543,6.21762" id="Path" stroke="white" stroke-width="2" stroke-linecap="round"></path>
+                                <path d="M9.2384,1.89795 L7.49856,5.83917 C7.27552,6.34441 7.50429,6.9348 8.00954,7.15784 L11.9508,8.89768" id="Path" stroke="white" stroke-width="2" stroke-linecap="round"></path>
+                            </g>
+                        </g>
+                    </svg>
+                        ${window.gfexpLangs[window.gfexpLang].retry || 'Réessayer'}
+                    </button>
+                </div>
+            `;
+                }
+            }
+            else if (error) {
+                if (pdfButton) {
+                    pdfButton.classList.remove('GFEXP_waiting');
+                    pdfButton.removeAttribute('disabled');
+                }
+                if (errorContainer) {
+                    errorContainer.innerHTML = `
+                <div class="GFEXP_error_content">
+                    <h3>${window.gfexpLangs[window.gfexpLang].error}</h3>
+                    <p>${error}</p>
+                </div>
+            `;
+                }
+            }
+            else if (currentStatus === 'checking') {
+                if (pdfButton) {
+                    pdfButton.setAttribute('disabled', 'true');
+                    pdfButton.classList.remove('GFEXP_waiting');
+                }
+                if (errorContainer) {
+                    errorContainer.innerHTML = `
+                <div class="GFEXP_error_content">
+                    <h3>${window.gfexpLangs[window.gfexpLang].tryingToConnect}</h3>
+                    <div class="GFEXP_loader"></div>
+                </div>
+            `;
+                }
+            }
+            else if (isWaiting) {
+                if (pdfButton) {
+                    pdfButton.setAttribute('disabled', 'true');
+                    pdfButton.classList.add('GFEXP_waiting');
+                }
+                if (errorContainer) {
+                    errorContainer.innerHTML = '';
+                }
+            } else {
+                if (pdfButton) {
+                    pdfButton.removeAttribute('disabled');
+                    pdfButton.classList.remove('GFEXP_waiting');
+                }
+                if (errorContainer) {
+                    errorContainer.innerHTML = '';
+                }
+            }
+
+            if (pdfUrl) {
+                if (successContainer) {
+                    successContainer.innerHTML = `
+                <div class="GFEXP_success_content">
+                    <h3>${window.gfexpLangs[window.gfexpLang].success}</h3>
+                    <p>${window.gfexpLangs[window.gfexpLang].youCanDownload}</p>
+                    <button id="GFEXP_download_button" style="margin-top: 1rem;" onclick="window.open('${pdfUrl}', '_blank')">
+                        <svg viewBox="0 0 24 24" version="1.1" style="width:17px;height:17px;">
+                            <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+                                <g id="Download">
+                                    <rect id="Rectangle" fill-rule="nonzero" x="0" y="0" width="24" height="24"></rect>
+                                    <path d="M12,16 L12,4 M12,16 L8,12 M12,16 L16,12 M20,18 C20,19.1045695 19.1045695,20 18,20 L6,20 C4.8954305,20 4,19.1045695 4,18 L4,10 C4,8.8954305 4.8954305,8 6,8 L18,8 C19.1045695,8 20,8.8954305 20,10 L20,18 Z" id="Path" stroke="#FFFFFF" stroke-width="2"></path>
+                                </g>
+                            </g>
+                        </svg>
+                        ${window.gfexpLangs[window.gfexpLang].downloadPdf}
+                    </button>
+                </div>
+            `;
+                }
+            } else {
+                if (successContainer) {
+                    successContainer.innerHTML = '';
+                }
+            }
+        });
+
+        observer.observe(marker, {
+            attributes: true,
+            attributeFilter: ['data-gfexp-server-status', 'data-gfexp-waiting', 'data-gfexp-pdf-url', 'data-gfexp-error']
+        });
+
+        window.checkStatus = async function checkStatus() {
+            const checkUrl = window.gfexpPdfGenerationServerUrl.replace(/\/+$/, '') + '/check-status';
+            marker.setAttribute('data-gfexp-server-status', 'checking');
+
+            try {
+                const response = await fetch(checkUrl);
+                if (response.ok) {
+                    marker.setAttribute('data-gfexp-server-status', 'connected');
+                    console.log('[GFEXP] ✅ Serveur PDF accessible');
+                } else {
+                    marker.setAttribute('data-gfexp-server-status', 'failed');
+                    console.warn('[GFEXP] ⚠️ Réponse reçue mais pas OK');
+                }
+            } catch (err) {
+                marker.setAttribute('data-gfexp-server-status', 'failed');
+                console.error('[GFEXP] ❌ Erreur de connexion au serveur PDF', err);
+            }
+        }
+
+        checkStatus();
+    })();
+
+    document.querySelector('div[data-testid*="new export button"], button[data-testid*="new export button"]')?.addEventListener('click', function () {
+        console.log("[GFEXP] Bouton d'exportation cliqué");
+
+        setTimeout(() => {
+
+            const marker = document.getElementById('GFEXP_marker');
+            if (!marker) {
+                console.log("GFEXP_marker not found !");
+                return;
+            }
+            const gfexpStatus = marker.getAttribute('data-gfexp-server-status');
+            const gfexpWaiting = marker.getAttribute('data-gfexp-waiting') === 'true';
+            const gfexpPdfUrl = marker.getAttribute('data-gfexp-pdf-url');
+            const gfexpError = marker.getAttribute('data-gfexp-error');
+
+            let exportDropdown = document.querySelector('div[data-testid*="new export button menu"]');
+
+            if (exportDropdown && !document.querySelector('[data-testid="data-testid new export button export as pdf"]')) {
+
+                let newButton = document.createElement('button');
+                newButton.className = "css-1k5elyl";
+                newButton.setAttribute("role", "menuitem");
+                newButton.setAttribute("data-role", "menuitem");
+                newButton.setAttribute("data-testid", "data-testid new export button export as pdf");
+                newButton.tabIndex = 1;
+                newButton.innerHTML = `
+<style>
+.css-new5m1{
+        display: flex;
+        flex-direction: row;
+        -webkit-box-align: center;
+        align-items: center;
+        -webkit-box-pack: start;
+        justify-content: flex-start;
+        gap: 8px;
+    }
+</style>
+<div class="css-new5m1">
+    <svg xmlns="http://www.w3.org/2000/svg" width="800px" height="800px" viewBox="-16.5 0 175 175" fill="none" style="width: 15px; height: 15px;">
+        <g>
+            <path d="M140.687 93.1644C140.867 109.431 141.111 125.696 141.195 141.964C141.226 147.904 140.769 153.843 140.726 159.789C140.664 168.177 134.102 173.205 126.549 173.359C111.171 173.673 95.7887 174.043 80.4081 173.964C62.1048 173.871 43.8014 173.402 25.5027 172.933C21.2425 172.722 16.9978 172.267 12.7895 171.571C7.65492 170.849 2.60183 164.962 2.41608 159.374C1.94746 145.251 1.41382 131.124 1.25892 116.996C0.916312 85.9138 0.849366 54.8283 0.517257 23.7455C0.466719 18.9706 0.582881 14.345 2.55846 9.92649C4.03522 6.62121 6.14933 3.94077 9.81696 2.95101C11.1159 2.61352 12.4484 2.42131 13.7898 2.37799C19.5104 2.15156 25.2448 2.16377 30.9549 1.78703C52.4014 0.381158 73.846 1.45915 95.2925 1.63833C97.3468 1.59847 99.388 1.97594 101.292 2.74783C103.196 3.51971 104.924 4.66982 106.371 6.12886C113.287 12.689 120.702 18.7232 127.859 25.0313C130.804 27.6277 133.594 30.3994 136.493 33.0484C137.301 33.7478 137.954 34.6076 138.412 35.573C138.87 36.5386 139.122 37.5892 139.152 38.6574C139.386 44.5959 139.756 50.5316 139.854 56.4714C140.055 68.7013 140.113 80.9335 140.231 93.165L140.687 93.1644ZM93.3799 10.0906C91.9662 9.94487 90.9712 9.76864 89.9729 9.75026C75.1567 9.47637 60.3403 9.21712 45.5236 8.97342C39.1296 8.87235 32.7342 8.83717 26.3395 8.79713C23.09 8.77678 19.8326 8.67361 16.5936 8.85804C12.1305 9.11204 10.6105 10.4209 10.0158 14.9523C9.56047 18.7257 9.34821 22.5246 9.38043 26.3254C9.37321 30.6933 9.80049 35.0604 9.83199 39.4297C9.92847 52.7783 9.94692 66.1273 9.95676 79.4764C9.97468 104.266 9.98078 129.056 9.97514 153.845C9.93917 154.856 10.0032 155.866 10.1661 156.864C11.1769 161.866 13.8416 164.576 19.0188 164.792C41.0186 165.711 63.0196 165.692 85.0274 165.289C95.8038 165.092 106.583 165.033 117.361 164.917C120.052 164.888 122.75 164.996 125.434 164.838C129.65 164.591 132.02 162.131 131.971 157.921C131.912 152.655 131.562 147.394 131.47 142.128C131.375 136.634 131.564 131.132 131.404 125.641C130.997 111.516 130.304 97.3984 130.036 83.272C129.815 71.498 130.036 59.7163 130.05 47.9384C130.05 47.0851 129.926 46.2362 129.884 45.7066C122.543 45.7066 115.485 45.7724 108.431 45.6681C106.08 45.6287 103.739 45.3414 101.448 44.8105C98.0301 44.0183 96.0952 41.8164 95.876 38.158C95.6338 34.1307 95.2282 30.1134 94.8659 26.094C94.3953 20.8545 93.8958 15.6261 93.3799 10.0906ZM124.647 36.3806C124.768 36.1706 124.889 35.9609 125.01 35.7512L102.689 15.4926L102.174 15.7502C103.277 22.97 104.38 30.1894 105.505 37.5568L124.647 36.3806Z" fill="#6A6C75"/>
+            <path d="M62.7033 132.498C63.0315 123.33 63.3472 114.161 63.7095 104.994C63.8322 101.879 64.4596 101.526 67.6015 100.75C76.6321 98.5181 83.3248 101.989 88.6857 108.989C89.0946 109.522 89.4661 110.086 89.8862 110.61C100.754 124.163 91.0676 140.352 78.3346 143.579C75.624 144.275 72.8765 144.819 70.1048 145.209C68.4883 145.465 66.8369 145.068 65.5123 144.107C64.1879 143.146 63.2989 141.698 63.0407 140.082C62.5694 137.588 62.297 135.06 61.936 132.547L62.7033 132.498ZM69.4531 136.865C72.5687 137.019 75.6791 136.471 78.5552 135.263C86.909 131.616 89.7936 123.146 85.2688 115.296C84.1682 113.346 82.8798 111.508 81.4227 109.808C80.2177 108.381 78.7291 107.219 77.0522 106.396C75.3752 105.574 73.5453 105.108 71.6787 105.029C72.2858 115.817 70.4848 126.197 69.4557 136.865H69.4531Z" fill="#6A6C75"/>
+            <path d="M35.6898 130.113C35.4541 132.697 35.3045 135.131 34.9822 137.541C34.8379 138.872 34.4918 140.173 33.9558 141.399C33.683 142.091 33.1642 142.658 32.499 142.992C31.8337 143.325 31.069 143.401 30.3512 143.205C28.7189 142.807 27.9582 141.626 27.9838 139.971C28.0612 134.933 28.1708 129.895 28.2463 124.856C28.3224 119.707 28.4031 114.557 28.4221 109.406C28.4313 106.814 29.0936 104.61 31.2228 102.901C35.8388 99.1989 41.0075 98.5038 46.4315 100.357C48.7269 101.136 50.8462 102.36 52.6681 103.959C54.4899 105.559 55.9786 107.501 57.049 109.676C59.0456 113.578 58.6596 117.487 56.1393 121.117C52.0267 127.042 46.0265 129.344 39.135 129.912C38.0389 129.997 36.9394 130.04 35.6898 130.113ZM34.5143 107.821C34.7486 112.586 34.9902 117.507 35.2573 122.941C38.4077 122.362 41.1545 122.001 43.8199 121.323C46.2805 120.698 48.1169 119.026 49.6226 117.003C50.1492 116.346 50.4635 115.544 50.5235 114.704C50.5835 113.863 50.3865 113.025 49.9586 112.299C47.1133 106.66 40.5992 104.65 34.5143 107.82V107.821Z" fill="#6A6C75"/>
+            <path d="M106.6 122.902C106.306 128.172 106.092 132.857 105.751 137.533C105.693 138.757 105.376 139.955 104.823 141.049C104.559 141.582 104.149 142.029 103.642 142.341C103.135 142.652 102.55 142.814 101.955 142.809C101.36 142.803 100.779 142.629 100.277 142.309C99.7758 141.988 99.3755 141.533 99.1208 140.995C98.5997 140.005 98.2892 138.918 98.2098 137.803C97.3979 126.811 97.9204 115.837 98.8911 104.882C99.1438 103.335 99.5848 101.825 100.204 100.385C100.766 98.7847 102.201 98.2307 103.679 98.1644C110.066 97.8769 116.457 97.5823 122.849 97.5402C125.844 97.5199 127.387 98.9967 127.333 101.037C127.28 103.078 125.65 104.331 122.715 104.384C118.114 104.464 113.51 104.446 108.907 104.467C107.923 104.472 106.938 104.467 105.983 104.467V114.9C108.292 114.9 110.267 114.896 112.243 114.9C113.359 114.834 114.478 114.855 115.59 114.961C116.492 115.067 117.328 115.486 117.952 116.146C118.576 116.806 118.948 117.665 119.003 118.571C118.995 119.421 118.713 120.244 118.201 120.922C117.689 121.599 116.972 122.094 116.157 122.333C114.857 122.668 113.522 122.852 112.179 122.881C110.402 122.969 108.617 122.902 106.6 122.902Z" fill="#6A6C75"/>
+        </g>
+    </svg>
+    <span class="css-pyoiur">${window.gfexpLangs[window.gfexpLang].exportAsPdf}</span>
+    <div class="css-ntrzv"></div>
+</div>`
+                ;
+
+                newButton.addEventListener('click', function () {
+                    console.log("[GFEXP] Ouverture modale export PDF");
+                    let mainView = document.querySelector('div.main-view');
+                    if (!mainView) {
+                        console.error("[GFEXP] ❌ mainView introuvable !");
+                        return;
+                    }
+
+                    if (document.querySelector('.custom-export-drawer')) return;
+
+                    let drawer = document.createElement('div');
+                    drawer.className = "rc-drawer rc-drawer-right css-el6sfw rc-drawer-open custom-export-drawer";
+                    drawer.tabIndex = -1;
+
+                    let drawerMask = document.createElement('div');
+                    drawerMask.className = "rc-drawer-mask css-a2ot0t";
+                    drawer.appendChild(drawerMask);
+
+                    let drawerContent = document.createElement('div');
+                    drawerContent.className = "rc-drawer-content-wrapper css-cifegn-drawer-content-wrapper-md";
+                    drawerContent.style.width = "50vw";
+
+                    let drawerInner = document.createElement('div');
+                    drawerInner.className = "rc-drawer-content css-ask04q";
+                    drawerInner.innerHTML = `
+<style>
+    .css-ask04q {
+        display: flex;
+        flex-direction: column;
+        background-color: rgb(24, 27, 31) !important;
+        overflow: unset !important;
+    }
+
+    .css-a2ot0t::before {
+        backdrop-filter: blur(1px);
+        inset: 0px;
+        content: "";
+        position: fixed;
+        background-color: rgba(63, 62, 62, 0.45) !important;
+    }
+
+    .css-xw9cpf-drawer-header {
+        -webkit-box-flex: 0;
+        flex-grow: 0;
+        padding: 16px 16px 24px;
+        border-bottom: 1px solid rgba(204, 204, 220, 0.12);
+    }
+
+    .css-xw9cpf-drawer-header {
+        -webkit-box-flex: 0;
+        flex-grow: 0;
+        padding: 16px 16px 24px;
+        border-bottom: 1px solid rgba(204, 204, 220, 0.12);
+    }
+
+    .css-5oscrx {
+        position: absolute;
+        right: 8px;
+        top: 8px;
+    }
+
+    .css-sffi5m {
+        z-index: 0;
+        position: relative;
+        margin: 0px 4px 0px 0px;
+        box-shadow: none;
+        border: none;
+        display: inline-flex;
+        background: transparent;
+        -webkit-box-pack: center;
+        justify-content: center;
+        -webkit-box-align: center;
+        align-items: center;
+        padding: 0px;
+        color: rgb(204, 204, 220);
+    }
+
+    .css-sffi5m::before {
+        z-index: -1;
+        position: absolute;
+        opacity: 0;
+        width: 24px;
+        height: 24px;
+        border-radius: 2px;
+        content: "";
+    }
+
+    .css-sffi5m:hover::before {
+        background-color: rgba(204, 204, 220, 0.16);
+        opacity: 1;
+    }
+
+    .css-fmaj2t-Icon {
+        display: inline-block;
+        fill: currentcolor;
+        flex-shrink: 0;
+        line-height: 0;
+        vertical-align: baseline;
+    }
+
+    .css-74awvt-Icon {
+        display: inline-block;
+        fill: currentcolor;
+        flex-shrink: 0;
+        line-height: 0;
+        vertical-align: middle;
+    }
+
+    .css-1v5z3sd-button {
+        display: inline-flex;
+        -webkit-box-align: center;
+        align-items: center;
+        font-size: 14px;
+        font-weight: 500;
+        font-family: Inter, Helvetica, Arial, sans-serif;
+        height: 32px;
+        line-height: 30px;
+        vertical-align: middle;
+        cursor: pointer;
+        color: rgb(204, 204, 220);
+        padding: 0px 15px;
+        border-radius: 2px;
+        background: transparent;
+        border-width: 1px;
+        border-style: solid;
+        border-color: rgba(204, 204, 220, 0.3);
+        border-image: initial;
+        transition: background-color 250ms cubic-bezier(0.4, 0, 0.2, 1), border-color 250ms cubic-bezier(0.4, 0, 0.2, 1), color 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .css-1v5z3sd-button:hover {
+        background: rgba(204, 204, 220, 0.08);
+        border-color: rgba(153, 153, 165, 0.3);
+        color: rgb(204, 204, 220);
+    }
+
+    .css-1vqrxqx {
+        padding: 16px;
+        height: 100%;
+        -webkit-box-flex: 1;
+        flex-grow: 1;
+    }
+
+    .css-1rplq84 {
+        display: flex;
+        flex-direction: column;
+        margin-bottom: 16px;
+    }
+
+    /* Radio button */
+    .css-l4ykjo-Label {
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1.25;
+        margin-bottom: 4px;
+        color: rgb(204, 204, 220);
+        max-width: 480px;
+    }
+
+    .css-1soq5x9 {
+        background-color: rgb(24, 27, 31);
+        display: inline-flex;
+        flex-flow: row;
+        border: 1px solid rgba(204, 204, 220, 0.2);
+        border-radius: 2px;
+        padding: 2px;
+    }
+
+    .css-7yrigi {
+        display: flex;
+        -webkit-box-pack: justify;
+        justify-content: space-between;
+        position: relative;
+        flex: 0 0 auto;
+        text-align: center;
+    }
+
+    .css-1jhu511 {
+        position: absolute;
+        opacity: 0;
+        z-index: 2;
+        height: 100%;
+        cursor: pointer;
+        width: 100% !important;
+    }
+
+    .css-18zk0h1 {
+        display: flex;
+        -webkit-box-align: center;
+        align-items: center;
+        -webkit-box-pack: center;
+        justify-content: center;
+        font-size: 14px;
+        height: 26px;
+        line-height: 26px;
+        color: rgba(204, 204, 220, 0.65);
+        padding: 0px 16px;
+        border-radius: 2px;
+        background: rgb(24, 27, 31);
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+        -webkit-box-flex: 1;
+        flex-grow: 1;
+    }
+
+    .css-1jhu511:checked + label {
+        color: rgb(204, 204, 220);
+        font-weight: 500;
+        background: rgba(204, 204, 220, 0.12);
+        z-index: 1;
+    }
+
+    /* Switch */
+    .css-1bs5s31 {
+        display: flex;
+        -webkit-box-align: start;
+        align-items: start;
+        gap: 8px;
+    }
+
+    .css-1n85obj {
+        width: 32px;
+        height: 16px;
+        position: relative;
+        line-height: 1;
+    }
+
+    .css-l4ykjo-Label {
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1.25;
+        margin-bottom: 4px;
+        color: rgb(204, 204, 220);
+        max-width: 480px;
+    }
+
+    .css-1n85obj input {
+        height: 100%;
+        opacity: 0;
+        z-index: -1000;
+        position: absolute;
+        width: 100% !important;
+    }
+
+    .css-1n85obj input:checked + label {
+        background: rgb(61, 113, 217);
+        border-color: rgb(61, 113, 217);
+    }
+
+    .css-1n85obj label {
+        width: 100%;
+        height: 100%;
+        cursor: pointer;
+        border-radius: 9999px;
+        background: rgb(17, 18, 23);
+        border: 1px solid rgba(204, 204, 220, 0.2);
+        transition: 0.3s;
+    }
+
+    .css-1n85obj input:checked + label svg {
+        transform: translate3d(18px, -50%, 0px);
+        background: rgb(255, 255, 255);
+        color: rgb(61, 113, 217);
+    }
+
+    .css-1n85obj label svg {
+        position: absolute;
+        display: block;
+        color: transparent;
+        width: 12px;
+        height: 12px;
+        border-radius: 100%;
+        background: rgba(204, 204, 220, 0.65);
+        box-shadow: rgba(1, 4, 9, 0.75) 0px 1px 2px;
+        left: 0px;
+        top: 50%;
+        transform: translate3d(2px, -50%, 0px);
+        transition: transform 0.2s cubic-bezier(0.19, 1, 0.22, 1);
+    }
+
+    .css-1qya104-Label-description {
+        color: rgba(204, 204, 220, 0.65);
+        font-size: 12px;
+        font-weight: 400;
+        margin-top: 2px;
+        display: block;
+    }
+
+    .GFEXP_error_content{
+        background-color: rgba(209, 14, 92, 0.15);
+        border: 1px solid rgba(255, 82, 134, 0.25);
+        padding: 1rem 1.5rem;
+        margin-bottom: 1rem;
+    }
+    .GFEXP_error h3{
+        font-size: 1.2rem;
+        font-weight: 500;
+        margin: 0 0 0.5rem 0;
+    }
+    .GFEXP_error p{
+        margin: 0;
+    }
+    .GFEXP_error button#GFEXP_retry_button{
+        background-color: rgb(245 14 14 / 44%);
+    }
+    .GFEXP_error button#GFEXP_retry_button:hover{
+        background-color: rgba(234,73,73,0.44)!important;
+    }
+
+    .GFEXP_success_content{
+        background-color: rgba(61,217,94,15%);
+        border: 1px solid rgba(146,255,110,25%);
+        padding: 1rem 1.5rem;
+        margin-bottom: 1rem;
+    }
+    .GFEXP_success h3{
+        font-size: 1.2rem;
+        font-weight: 500;
+        margin: 0 0 0.5rem 0;
+    }
+    .GFEXP_success p{
+        margin: 0;
+    }
+    .GFEXP_success button#GFEXP_download_button{
+        background-color: #0c8e0c;
+    }
+    .GFEXP_success button#GFEXP_download_button:hover{
+        background-color: #3aaf3a!important;
+    }
+
+     .GFEXP_loader {
+        transform: translate(-50%, -50%);
+        border: 2px solid #717171;
+        border-radius: 50%;
+        border-top: 2px solid #ffffff;
+        width: 1rem;
+        height: 1rem;
+        -webkit-animation: spin 1.5s linear infinite;
+        animation: spin 1.5s linear infinite;
+    }
+
+    .GFEXP_generatePdf, #GFEXP_download_button, #GFEXP_retry_button {
+        display: inline-flex;
+        -webkit-box-align: center;
+        align-items: center;
+        font-size: 14px;
+        font-weight: 500;
+        font-family: Inter, Helvetica, Arial, sans-serif;
+        height: 32px;
+        line-height: 30px;
+        vertical-align: middle;
+        cursor: pointer;
+        color: rgb(255, 255, 255);
+        gap: 8px;
+        padding: 0px 15px;
+        border-radius: 2px;
+        background: rgb(61, 113, 217);
+        border-width: 1px;
+        border-style: solid;
+        border-color: transparent;
+        border-image: initial;
+        transition: background-color 250ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 250ms cubic-bezier(0.4, 0, 0.2, 1), border-color 250ms cubic-bezier(0.4, 0, 0.2, 1), color 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .GFEXP_generatePdf:disabled, #GFEXP_download_button:disabled, #GFEXP_retry_button:disabled {
+        cursor: not-allowed;
+        box-shadow: none;
+        color: rgba(204, 204, 220, 0.6);
+        transition: none;
+        background: rgba(204, 204, 220, 0.04);
+        border: 1px solid transparent;
+    }
+
+    .GFEXP_generatePdf:not([disabled]):hover {
+        background: rgb(90, 134, 222);
+    }
+
+    .GFEXP_loader {
+        display: none;
+    }
+
+    button[disabled].GFEXP_waiting .GFEXP_loader {
+        display: inline-block;
+    }
+    button[disabled].GFEXP_waiting svg {
+        display: none;
+    }
+
+    @-webkit-keyframes spin {
+        0% {
+            -webkit-transform: rotate(0deg);
+        }
+        100% {
+            -webkit-transform: rotate(360deg);
+        }
+    }
+
+    @keyframes spin {
+        0% {
+            transform: rotate(0deg);
+        }
+        100% {
+            transform: rotate(360deg);
+        }
+    }
+</style>
+<div class="css-1xwmgv3">
+    <div class="css-xw9cpf-drawer-header">
+        <div class="css-5oscrx">
+            <button variant="secondary" data-testid="data-testid Drawer close" aria-label="Close" title="Close" class="css-sffi5m close-drawer" type="button" tabindex="0">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" width="16"
+                     height="16" class="css-fmaj2t-Icon">
+                    <path d="M13.41,12l4.3-4.29a1,1,0,1,0-1.42-1.42L12,10.59,7.71,6.29A1,1,0,0,0,6.29,7.71L10.59,12l-4.3,4.29a1,1,0,0,0,0,1.42,1,1,0,0,0,1.42,0L12,13.41l4.29,4.3a1,1,0,0,0,1.42,0,1,1,0,0,0,0-1.42Z"></path>
+                </svg>
+            </button>
+        </div>
+        <h3 class="css-q1uo1s">${window.gfexpLangs[window.gfexpLang].exportDashboardAsPdf}</h3>
+    </div>
+    <div class="css-1vqrxqx">
+        <p>${window.gfexpLangs[window.gfexpLang].exportDownload}</p>
+        <div class="css-3nzyb4">
+            <div class="css-i7txp7">
+                <div class="css-1bs5s31">
+                    <div class="css-1n85obj">
+                        <input type="checkbox" role="switch" id="gfexpDownloadPdfThemeCurrentTimeRange" data-testid="data-testid share internally lock time range switch" checked="">
+                        <label for="gfexpDownloadPdfThemeCurrentTimeRange" aria-label="Lock time range">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" width="12" height="12" class="css-1d3xu67-Icon">
+                                <path d="M18.71,7.21a1,1,0,0,0-1.42,0L9.84,14.67,6.71,11.53A1,1,0,1,0,5.29,13l3.84,3.84a1,1,0,0,0,1.42,0l8.16-8.16A1,1,0,0,0,18.71,7.21Z"></path>
+                            </svg>
+                        </label>
+                    </div>
+                    <div class="css-l4ykjo-Label"><label>
+                        <div class="css-70qvj9">${window.gfexpLangs[window.gfexpLang].lockTimeRange}</div>
+                        <span class="css-1qya104-Label-description">${window.gfexpLangs[window.gfexpLang].absoluteTimeRange}</span></label>
+                    </div>
+                </div>
+            </div>
+            <div class="css-1rplq84">
+                <div class="css-l4ykjo-Label"><label>
+                    <div class="css-70qvj9">${window.gfexpLangs[window.gfexpLang].theme}</div>
+                </label></div>
+                <div>
+                    <div>
+                        <div role="radiogroup" class="css-1soq5x9">
+                            <div class="css-7yrigi" data-testid="data-testid radio-button">
+                                <input type="radio" class="css-1jhu511" id="gfexpDownloadPdfThemeCurrent" name="gfexpDownloadPdfTheme" checked="">
+                                <label class="css-18zk0h1" for="gfexpDownloadPdfThemeCurrent">
+                                    ${window.gfexpLangs[window.gfexpLang].current}
+                                </label>
+                            </div>
+                            <div class="css-7yrigi" data-testid="data-testid radio-button">
+                                <input type="radio" class="css-1jhu511" id="gfexpDownloadPdfThemeDark" name="gfexpDownloadPdfTheme">
+                                <label class="css-18zk0h1" for="gfexpDownloadPdfThemeDark">
+                                    ${window.gfexpLangs[window.gfexpLang].dark}
+                                </label>
+                            </div>
+                            <div class="css-7yrigi" data-testid="data-testid radio-button">
+                                <input type="radio" class="css-1jhu511" id="gfexpDownloadPdfThemeLight" name="gfexpDownloadPdfTheme">
+                                <label class="css-18zk0h1" for="gfexpDownloadPdfThemeLight">
+                                    ${window.gfexpLangs[window.gfexpLang].light}
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="GFEXP_error" class="GFEXP_error"></div>
+
+        <div id="GFEXP_success" class="GFEXP_success"></div>
+
+        <button class="GFEXP_generatePdf ${gfexpWaiting ? 'GFEXP_waiting' : ''}" ${(gfexpStatus !== 'connected' || gfexpWaiting) ? 'disabled' : ''}>
+             <svg xmlns="http://www.w3.org/2000/svg" width="800px" height="800px" viewBox="-16.5 0 175 175" fill="none" style="width: 15px; height: 15px;">
+                <g>
+                    <path d="M140.687 93.1644C140.867 109.431 141.111 125.696 141.195 141.964C141.226 147.904 140.769 153.843 140.726 159.789C140.664 168.177 134.102 173.205 126.549 173.359C111.171 173.673 95.7887 174.043 80.4081 173.964C62.1048 173.871 43.8014 173.402 25.5027 172.933C21.2425 172.722 16.9978 172.267 12.7895 171.571C7.65492 170.849 2.60183 164.962 2.41608 159.374C1.94746 145.251 1.41382 131.124 1.25892 116.996C0.916312 85.9138 0.849366 54.8283 0.517257 23.7455C0.466719 18.9706 0.582881 14.345 2.55846 9.92649C4.03522 6.62121 6.14933 3.94077 9.81696 2.95101C11.1159 2.61352 12.4484 2.42131 13.7898 2.37799C19.5104 2.15156 25.2448 2.16377 30.9549 1.78703C52.4014 0.381158 73.846 1.45915 95.2925 1.63833C97.3468 1.59847 99.388 1.97594 101.292 2.74783C103.196 3.51971 104.924 4.66982 106.371 6.12886C113.287 12.689 120.702 18.7232 127.859 25.0313C130.804 27.6277 133.594 30.3994 136.493 33.0484C137.301 33.7478 137.954 34.6076 138.412 35.573C138.87 36.5386 139.122 37.5892 139.152 38.6574C139.386 44.5959 139.756 50.5316 139.854 56.4714C140.055 68.7013 140.113 80.9335 140.231 93.165L140.687 93.1644ZM93.3799 10.0906C91.9662 9.94487 90.9712 9.76864 89.9729 9.75026C75.1567 9.47637 60.3403 9.21712 45.5236 8.97342C39.1296 8.87235 32.7342 8.83717 26.3395 8.79713C23.09 8.77678 19.8326 8.67361 16.5936 8.85804C12.1305 9.11204 10.6105 10.4209 10.0158 14.9523C9.56047 18.7257 9.34821 22.5246 9.38043 26.3254C9.37321 30.6933 9.80049 35.0604 9.83199 39.4297C9.92847 52.7783 9.94692 66.1273 9.95676 79.4764C9.97468 104.266 9.98078 129.056 9.97514 153.845C9.93917 154.856 10.0032 155.866 10.1661 156.864C11.1769 161.866 13.8416 164.576 19.0188 164.792C41.0186 165.711 63.0196 165.692 85.0274 165.289C95.8038 165.092 106.583 165.033 117.361 164.917C120.052 164.888 122.75 164.996 125.434 164.838C129.65 164.591 132.02 162.131 131.971 157.921C131.912 152.655 131.562 147.394 131.47 142.128C131.375 136.634 131.564 131.132 131.404 125.641C130.997 111.516 130.304 97.3984 130.036 83.272C129.815 71.498 130.036 59.7163 130.05 47.9384C130.05 47.0851 129.926 46.2362 129.884 45.7066C122.543 45.7066 115.485 45.7724 108.431 45.6681C106.08 45.6287 103.739 45.3414 101.448 44.8105C98.0301 44.0183 96.0952 41.8164 95.876 38.158C95.6338 34.1307 95.2282 30.1134 94.8659 26.094C94.3953 20.8545 93.8958 15.6261 93.3799 10.0906ZM124.647 36.3806C124.768 36.1706 124.889 35.9609 125.01 35.7512L102.689 15.4926L102.174 15.7502C103.277 22.97 104.38 30.1894 105.505 37.5568L124.647 36.3806Z" fill="white"/>
+                    <path d="M62.7033 132.498C63.0315 123.33 63.3472 114.161 63.7095 104.994C63.8322 101.879 64.4596 101.526 67.6015 100.75C76.6321 98.5181 83.3248 101.989 88.6857 108.989C89.0946 109.522 89.4661 110.086 89.8862 110.61C100.754 124.163 91.0676 140.352 78.3346 143.579C75.624 144.275 72.8765 144.819 70.1048 145.209C68.4883 145.465 66.8369 145.068 65.5123 144.107C64.1879 143.146 63.2989 141.698 63.0407 140.082C62.5694 137.588 62.297 135.06 61.936 132.547L62.7033 132.498ZM69.4531 136.865C72.5687 137.019 75.6791 136.471 78.5552 135.263C86.909 131.616 89.7936 123.146 85.2688 115.296C84.1682 113.346 82.8798 111.508 81.4227 109.808C80.2177 108.381 78.7291 107.219 77.0522 106.396C75.3752 105.574 73.5453 105.108 71.6787 105.029C72.2858 115.817 70.4848 126.197 69.4557 136.865H69.4531Z" fill="white"/>
+                    <path d="M35.6898 130.113C35.4541 132.697 35.3045 135.131 34.9822 137.541C34.8379 138.872 34.4918 140.173 33.9558 141.399C33.683 142.091 33.1642 142.658 32.499 142.992C31.8337 143.325 31.069 143.401 30.3512 143.205C28.7189 142.807 27.9582 141.626 27.9838 139.971C28.0612 134.933 28.1708 129.895 28.2463 124.856C28.3224 119.707 28.4031 114.557 28.4221 109.406C28.4313 106.814 29.0936 104.61 31.2228 102.901C35.8388 99.1989 41.0075 98.5038 46.4315 100.357C48.7269 101.136 50.8462 102.36 52.6681 103.959C54.4899 105.559 55.9786 107.501 57.049 109.676C59.0456 113.578 58.6596 117.487 56.1393 121.117C52.0267 127.042 46.0265 129.344 39.135 129.912C38.0389 129.997 36.9394 130.04 35.6898 130.113ZM34.5143 107.821C34.7486 112.586 34.9902 117.507 35.2573 122.941C38.4077 122.362 41.1545 122.001 43.8199 121.323C46.2805 120.698 48.1169 119.026 49.6226 117.003C50.1492 116.346 50.4635 115.544 50.5235 114.704C50.5835 113.863 50.3865 113.025 49.9586 112.299C47.1133 106.66 40.5992 104.65 34.5143 107.82V107.821Z" fill="white"/>
+                    <path d="M106.6 122.902C106.306 128.172 106.092 132.857 105.751 137.533C105.693 138.757 105.376 139.955 104.823 141.049C104.559 141.582 104.149 142.029 103.642 142.341C103.135 142.652 102.55 142.814 101.955 142.809C101.36 142.803 100.779 142.629 100.277 142.309C99.7758 141.988 99.3755 141.533 99.1208 140.995C98.5997 140.005 98.2892 138.918 98.2098 137.803C97.3979 126.811 97.9204 115.837 98.8911 104.882C99.1438 103.335 99.5848 101.825 100.204 100.385C100.766 98.7847 102.201 98.2307 103.679 98.1644C110.066 97.8769 116.457 97.5823 122.849 97.5402C125.844 97.5199 127.387 98.9967 127.333 101.037C127.28 103.078 125.65 104.331 122.715 104.384C118.114 104.464 113.51 104.446 108.907 104.467C107.923 104.472 106.938 104.467 105.983 104.467V114.9C108.292 114.9 110.267 114.896 112.243 114.9C113.359 114.834 114.478 114.855 115.59 114.961C116.492 115.067 117.328 115.486 117.952 116.146C118.576 116.806 118.948 117.665 119.003 118.571C118.995 119.421 118.713 120.244 118.201 120.922C117.689 121.599 116.972 122.094 116.157 122.333C114.857 122.668 113.522 122.852 112.179 122.881C110.402 122.969 108.617 122.902 106.6 122.902Z" fill="white"/>
+                </g>
+            </svg>
+            <div class="GFEXP_loader"></div>
+            <span class="css-1riaxdn">
+                ${window.gfexpLangs[window.gfexpLang].generatePdf}
+            </span>
+        </button>
+        <button class="css-1v5z3sd-button close-drawer">${window.gfexpLangs[window.gfexpLang].cancel}</button>
+    </div>
+</div>`
+                    ;
+
+                    if (gfexpStatus === "failed") {
+                        const errorContainer = drawerInner.querySelector('#GFEXP_error');
+                        if (errorContainer) {
+                            errorContainer.innerHTML = `
+<div id="GFEXP_error_content" class="GFEXP_error_content">
+    <h3>${window.gfexpLangs[window.gfexpLang].serverUnavailable}</h3>
+    <p>${window.gfexpLangs[window.gfexpLang].pleaseCheckServer}</p>
+    <button id="GFEXP_retry_button" style="margin-top: 1rem;" onclick="window.checkStatus()">
+    <svg viewBox="0 0 24 24" version="1.1" style="width:17px;height:17px;">
+        <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+            <g id="Reload">
+                <rect id="Rectangle" fill-rule="nonzero" x="0" y="0" width="24" height="24"></rect>
+                <path d="M4,13 C4,17.4183 7.58172,21 12,21 C16.4183,21 20,17.4183 20,13 C20,8.58172 16.4183,5 12,5 C10.4407,5 8.98566,5.44609 7.75543,6.21762" id="Path" stroke="white" stroke-width="2" stroke-linecap="round"></path>
+                <path d="M9.2384,1.89795 L7.49856,5.83917 C7.27552,6.34441 7.50429,6.9348 8.00954,7.15784 L11.9508,8.89768" id="Path" stroke="white" stroke-width="2" stroke-linecap="round"></path>
+            </g>
+        </g>
+    </svg>
+        ${window.gfexpLangs[window.gfexpLang].retry || 'Réessayer'}
+    </button>
+</div>
+        `;
+                        }
+
+                        console.warn('[GFEXP] ❌ Le serveur PDF n\'est pas prêt (status:', gfexpStatus, ')');
+                    }
+
+                    if (gfexpPdfUrl) {
+                        const successContainer = drawerInner.querySelector('#GFEXP_success');
+                        if (successContainer) {
+                            successContainer.innerHTML = `
+                             <div class="GFEXP_success_content">
+                                <h3>${window.gfexpLangs[window.gfexpLang].success}</h3>
+                                <p>${window.gfexpLangs[window.gfexpLang].youCanDownload}</p>
+                                <button id="GFEXP_download_button" style="margin-top: 1rem;" onclick="window.open('${gfexpPdfUrl}', '_blank')">
+                                    <svg viewBox="0 0 24 24" version="1.1" style="width:17px;height:17px;">
+                                        <g id="Page-1" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+                                            <g id="Download">
+                                                <rect id="Rectangle" fill-rule="nonzero" x="0" y="0" width="24" height="24"></rect>
+                                                <path d="M12,16 L12,4 M12,16 L8,12 M12,16 L16,12 M20,18 C20,19.1045695 19.1045695,20 18,20 L6,20 C4.8954305,20 4,19.1045695 4,18 L4,10 C4,8.8954305 4.8954305,8 6,8 L18,8 C19.1045695,8 20,8.8954305 20,10 L20,18 Z" id="Path" stroke="#FFFFFF" stroke-width="2"></path>
+                                            </g>
+                                        </g>
+                                    </svg>
+                                    ${window.gfexpLangs[window.gfexpLang].downloadPdf}
+                                </button>
+                            </div>
+                            `;
+                        }
+                        console.log('[GFEXP] ✅ PDF généré avec succès:', gfexpPdfUrl);
+                    }
+
+                    if (gfexpError) {
+                        const errorContainer = drawerInner.querySelector('#GFEXP_error');
+                        if (errorContainer) {
+                            errorContainer.innerHTML = `
+                            <div id="GFEXP_error_content" class="GFEXP_error_content">
+                                <h3>${window.gfexpLangs[window.gfexpLang].error}</h3>
+                                <p>${gfexpError}</p>
+                            </div>
+                            `;
+                        }
+                        console.error('[GFEXP] ❌ Erreur lors de la génération du PDF:', gfexpError);
+                    }
+
+
+
+                    drawerContent.appendChild(drawerInner);
+                    drawer.appendChild(drawerContent);
+                    mainView.appendChild(drawer);
+
+                    drawer.querySelectorAll('.close-drawer').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            drawer.remove();
+                        });
+                    });
+                    drawerMask.addEventListener('click', () => {
+                        drawer.remove();
+                    });
+
+                    let gfexpDownloadPdfButton = drawer.querySelector('button.GFEXP_generatePdf');
+                    gfexpDownloadPdfButton.addEventListener('click', async () => {
+                        marker.setAttribute('data-gfexp-waiting', 'true')
+                        marker.removeAttribute('data-gfexp-error');
+                        marker.removeAttribute('data-gfexp-pdf-url');
+
+                        let theme = drawer.querySelector('input[name="gfexpDownloadPdfTheme"]:checked').id;
+                        let lockTimeRange = drawer.querySelector('#gfexpDownloadPdfThemeCurrentTimeRange').checked;
+                        console.log("[GFEXP] Theme:", theme);
+                        console.log("[GFEXP] Lock time range:", lockTimeRange);
+
+                        function filterURL(lockTimeRange, theme) {
+                            let url = new URL(window.location.href);
+                            let params = new URLSearchParams(url.search);
+
+                            let newParams = new URLSearchParams();
+                            if (params.has('orgId')) {
+                                newParams.set('orgId', params.get('orgId'));
+                            }
+
+                            if (lockTimeRange) {
+                                newParams.set('from', params.has('from') ? params.get('from') : '${__from}'); // EDIT FROM
+                                newParams.set('to', params.has('to') ? params.get('to') : '${__to}'); // EDIT TO
+                            }
+
+                            if (theme === 'gfexpDownloadPdfThemeDark') {
+                                newParams.set('theme', 'dark');
+                            } else if (theme === 'gfexpDownloadPdfThemeLight') {
+                                newParams.set('theme', 'light');
+                            } else {
+                                newParams.set('theme', 'current');
+                            }
+
+                            for (let [key, value] of params.entries()) {
+                                if (key.startsWith('var-')) {
+                                    newParams.set(key, value);
+                                }
+                            }
+
+                            return url.origin + url.pathname + (newParams.toString() ? '?' + newParams.toString() : '');
+                        }
+
+                        let url = filterURL(lockTimeRange, theme);
+
+                        console.log("[GFEXP] URL filtered:", url);
+                        const newWindow = window.open('', '_blank');
+                        newWindow.document.write(`
+                            <html style="background-color:#181B1F; color: #ccc; font-family: sans-serif;">
+                                <head><title>${window.gfexpLangs[window.gfexpLang].generatingPdf}</title></head>
+                                <body style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh;">
+                                    <div style="font-size: 1.2rem; margin-bottom: 1rem;">📄 ${window.gfexpLangs[window.gfexpLang].generatingPdf}</div>
+                                    <div class="loader"></div>
+                                    <style>
+                                        .loader {
+                                            border: 6px solid rgba(255, 255, 255, 0.2);
+                                            border-top: 6px solid #ccc;
+                                            border-radius: 50%;
+                                            width: 40px;
+                                            height: 40px;
+                                            animation: spin 1s linear infinite;
+                                        }
+                                        @keyframes spin {
+                                            0% { transform: rotate(0deg); }
+                                            100% { transform: rotate(360deg); }
+                                        }
+                                    </style>
+                                </body>
+                            </html>
+                        `);
+                        newWindow.document.close();
+
+                        try {
+                            console.log('[GFEXP] Requesting PDF generation for URL:', url);
+                            const generateUrl = gfexpPdfGenerationServerUrl.replace(/\/+$/, '') + '/generate-pdf';
+                            console.log('[GFEXP] PDF generation URL:', generateUrl);
+                            gfexpDownloadPdfButton.setAttribute('disabled', 'true');
+
+                            const response = await fetch(generateUrl, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({ url })
+                            });
+
+                            if (response.ok) {
+                                const data = await response.json();
+                                const pdfUrl = data.pdfUrl;
+                                newWindow.location.href = pdfUrl;
+                                marker.setAttribute('data-gfexp-pdf-url', pdfUrl);
+                            } else {
+                                const errorText = await response.text();
+                                console.error('[GFEXP] ❌ Response error:', errorText);
+
+                                let message = '';
+                                switch (response.status) {
+                                    case 400:
+                                        message = `Mauvaise requête (400). Vérifiez l'URL : ${errorText}`;
+                                        break;
+                                    case 404:
+                                        message = `Service PDF introuvable (404) : ${errorText}`;
+                                        break;
+                                    case 500:
+                                        message = `Erreur serveur (500) : ${errorText}`;
+                                        break;
+                                    default:
+                                        message = `Erreur (${response.status}) : ${errorText}`;
+                                }
+
+                                marker.setAttribute('data-gfexp-error', message);
+                                newWindow.document.body.innerHTML = `
+                                    <div style="padding: 2rem; font-family: sans-serif; color: white; background: #181B1F; text-align: center;">
+                                        <h3>❌ ${window.gfexpLangs[window.gfexpLang].error}</h3>
+                                        <p>${message}</p>
+                                        <p style="margin-top: 1rem;"><em>${window.gfexpLangs[window.gfexpLang].pleaseCheckServer}</em></p>
+                                    </div>
+                                `;
+                            }
+                        } catch (error) {
+                            console.error('[GFEXP] ❌ Fetch error:', error);
+                            marker.setAttribute('data-gfexp-server-status', 'failed');
+
+                            newWindow.document.body.innerHTML = `
+                                <div style="padding: 2rem; font-family: sans-serif; color: white; background: #181B1F; text-align: center;">
+                                    <h3>❌ ${window.gfexpLangs[window.gfexpLang].error}</h3>
+                                    <p>${error.message || 'Une erreur est survenue lors de la génération du PDF.'}</p>
+                                    <p style="margin-top: 1rem;"><em>${window.gfexpLangs[window.gfexpLang].pleaseCheckServer}</em></p>
+                                </div>
+                            `;
+                        } finally {
+                            console.log('[GFEXP] ✅ PDF generation request completed.');
+                            marker.setAttribute('data-gfexp-waiting', 'false');
+                        }
+                    });
+                });
+                exportDropdown.insertAdjacentElement('beforeend', newButton);
+            }
+        }, 50);
+    });
+
+</script>

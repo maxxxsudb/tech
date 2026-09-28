@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: tech
+    folder: Tech
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
