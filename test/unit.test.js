@@ -15,7 +15,15 @@ function loadModule() {
       return proxy;
     }
   }
-  const grafanaData = { AppPlugin, BusEventWithPayload: class {} };
+  const NOW = Date.parse("2026-10-01T12:00:00Z");
+  const dateMath = {
+    parse: (value) => {
+      if (value === "now") return { valueOf: () => NOW };
+      const match = /^now-(\d+)([hd])$/.exec(value);
+      return match ? { valueOf: () => NOW - Number(match[1]) * (match[2] === "h" ? 3600e3 : 86400e3) } : undefined;
+    },
+  };
+  const grafanaData = { AppPlugin, BusEventWithPayload: class {}, dateMath };
   const grafanaRuntime = { config: { appSubUrl: "/crf/dashboard", bootData: { user: { orgId: 1, orgRole: "Admin" } } } };
   const React = { createElement: () => null, Fragment: "Fragment" };
   return factory(grafanaData, grafanaRuntime, React, {}).__test;
@@ -174,4 +182,84 @@ test("exploreUrl учитывает appSubUrl и диапазон времени
   const panes = JSON.parse(decodeURIComponent(url.split("panes=")[1]));
   assert.equal(panes.a.queries[0].expr, "up");
   assert.equal(panes.a.range.from, "now-6h");
+});
+
+test("limitedRange сокращает диапазон запросов AI от конца диапазона", () => {
+  const clamped = t.limitedRange({ timeRange: { from: "now-30d", to: "now" } }, 24);
+  assert.equal(clamped.clamped, true);
+  assert.equal(clamped.to - clamped.from, 24 * 3600e3);
+  const untouched = t.limitedRange({ timeRange: { from: "now-6h", to: "now" } }, 24);
+  assert.equal(untouched.clamped, false);
+  assert.equal(untouched.to - untouched.from, 6 * 3600e3);
+  assert.equal(t.limitedRange({ timeRange: { from: "now-30d", to: "now" } }, 0).clamped, false);
+});
+
+function withBrowserGlobals(fetchImpl, fn) {
+  const store = new Map();
+  const previous = { fetch: global.fetch, sessionStorage: global.sessionStorage };
+  global.sessionStorage = { getItem: (key) => (store.has(key) ? store.get(key) : null), setItem: (key, value) => store.set(key, String(value)), removeItem: (key) => store.delete(key) };
+  global.fetch = fetchImpl;
+  return Promise.resolve(fn()).finally(() => {
+    global.fetch = previous.fetch;
+    global.sessionStorage = previous.sessionStorage;
+  });
+}
+
+test("после отказа в stream флаг на сессию отключает stream для следующих запросов", async () => {
+  const streams = [];
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    streams.push(body.stream);
+    if (body.stream) return new Response(JSON.stringify({ error: { message: "stream is not supported" } }), { status: 422, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { headers: { "content-type": "application/json" } });
+  };
+  await withBrowserGlobals(fetchImpl, async () => {
+    const settings = { provider: "custom", apiUrl: "http://llm", apiPath: "/v1/chat/completions", model: "m", useAuth: false };
+    assert.equal((await t.postChat(settings, { model: "m", stream: true, messages: [] })).content, "ok");
+    assert.equal(t.isStreamUnsupported(settings), true);
+    assert.equal((await t.postChat(settings, { model: "m", stream: true, messages: [] })).content, "ok");
+    assert.equal(t.isStreamUnsupported(Object.assign({}, settings, { model: "other" })), false);
+  });
+  assert.deepEqual(streams, [true, false, false]);
+});
+
+test("ошибка не из-за stream не ставит флаг", async () => {
+  const fetchImpl = async () => new Response(JSON.stringify({ error: { message: "context too long" } }), { status: 400, headers: { "content-type": "application/json" } });
+  await withBrowserGlobals(fetchImpl, async () => {
+    const settings = { provider: "custom", apiUrl: "http://llm", apiPath: "/v1/chat/completions", model: "m", useAuth: false };
+    await assert.rejects(t.postChat(settings, { model: "m", stream: true, messages: [] }));
+    assert.equal(t.isStreamUnsupported(settings), false);
+  });
+});
+
+test("runAssistant соблюдает лимит запросов AI за один ответ и просит итог", async () => {
+  const settings = Object.assign({}, t.defaults, { toolsMode: "text", aiQueryMaxPerTurn: 2 });
+  const block = (n) => "```grafana-query\n" + JSON.stringify({ datasourceUid: "loki", query: { expr: `q${n}` }, reason: `r${n}` }) + "\n```";
+  const requests = [];
+  let executed = 0;
+  const result = await t.runAssistant(settings, {}, "{}", [{ role: "user", content: "расследуй" }], {
+    queries: true,
+    post: async (_settings, body) => {
+      requests.push(body);
+      const content = requests.length === 1 ? block(1) + block(2) + block(3) : "Итог";
+      return { content, reasoning: "", toolCalls: [] };
+    },
+    executeQuery: async () => {
+      executed += 1;
+      return { results: [] };
+    },
+  });
+  assert.equal(executed, 2);
+  assert.equal(result.content, "Итог");
+  assert.equal(result.steps.filter((step) => step.error).length, 1);
+  assert.match(requests[1].messages[requests[1].messages.length - 1].content, /Лимит запросов исчерпан/);
+  assert.equal(requests.length, 2);
+});
+
+test("fitContext при сильном сжатии сохраняет названия всех панелей, а не только первых 60", () => {
+  const context = { panels: Array.from({ length: 80 }, (_, index) => ({ id: index + 1, title: `Panel ${index + 1}`, type: "timeseries", datasource: { type: "prometheus", uid: "prom" }, targets: [{ refId: "A", expr: "x".repeat(200) }] })) };
+  const fitted = t.fitContext(context, 4000);
+  assert.ok(fitted.json.includes("Panel 80"));
+  assert.ok(fitted.reductions.includes("панели только с id и названием"));
+  assert.ok(!fitted.reductions.includes("панели сверх 60"));
 });
