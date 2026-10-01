@@ -27,6 +27,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     streaming: true,
     toolsMode: "text",
     investigationDatasourceTypes: "loki,prometheus,tempo",
+    aiQueryMaxRangeHours: 24,
+    aiQueryTimeoutSeconds: 30,
+    aiQueryMaxPerTurn: 6,
     launcherMode: "both",
     includePanelData: true,
     maxPanelRows: 20,
@@ -153,6 +156,40 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
   function shouldRetryWithoutStream(body, status, options) {
     return Boolean(body && body.stream && !(options && options.noStreamFallback) && [400, 405, 415, 422, 501].includes(Number(status)));
+  }
+
+  // Если провайдер отказал в stream, а без stream ответил, до конца сессии браузера stream для него не запрашивается.
+  const STREAM_UNSUPPORTED_KEY = "tech-ai-stream-unsupported";
+
+  function streamFlagKey(settings) {
+    return [proxyRoute(settings), settings.provider === "groq" ? "" : settings.apiUrl, modelName(settings)].join("|");
+  }
+
+  function streamUnsupportedSet() {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(STREAM_UNSUPPORTED_KEY) || "[]");
+      return new Set(Array.isArray(value) ? value : []);
+    } catch (_) {
+      return new Set();
+    }
+  }
+
+  function isStreamUnsupported(settings) {
+    return streamUnsupportedSet().has(streamFlagKey(settings));
+  }
+
+  function markStreamUnsupported(settings) {
+    try {
+      const set = streamUnsupportedSet();
+      set.add(streamFlagKey(settings));
+      sessionStorage.setItem(STREAM_UNSUPPORTED_KEY, JSON.stringify(Array.from(set)));
+    } catch (_) {}
+  }
+
+  function clearStreamUnsupported() {
+    try {
+      sessionStorage.removeItem(STREAM_UNSUPPORTED_KEY);
+    } catch (_) {}
   }
 
   function estimateTokens(value) {
@@ -304,6 +341,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     options = options || {};
     if (settings.provider === "groq" && settings._hasGroqApiKey === false) throw new Error("Для Groq не задан API key");
     if (settings.provider !== "groq") normalizePath(settings.apiPath);
+    if (body.stream && !options.noStreamFallback && isStreamUnsupported(settings)) body = Object.assign({}, body, { stream: false });
     const headers = { "Content-Type": "application/json", Accept: body.stream ? "text/event-stream" : "application/json" };
     if (orgId()) headers["X-Grafana-Org-Id"] = String(orgId());
     const response = await fetch(proxyUrl(proxyRoute(settings)), {
@@ -322,7 +360,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         data = { message: text.slice(0, 500) || response.statusText };
       }
       if (shouldRetryWithoutStream(body, response.status, options)) {
-        return postChat(settings, Object.assign({}, body, { stream: false }), Object.assign({}, options, { noStreamFallback: true }));
+        const result = await postChat(settings, Object.assign({}, body, { stream: false }), Object.assign({}, options, { noStreamFallback: true }));
+        markStreamUnsupported(settings);
+        return result;
       }
       throw { status: response.status, data };
     }
@@ -470,11 +510,62 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     return Math.max(1, Math.min(100, Number(settings.maxPanelRows) || 20));
   }
 
-  async function runDatasourceQueries(context, queries) {
-    const from = rangeMilliseconds(context.timeRange && context.timeRange.from, "now-1h");
+  function queryTimeoutMs(settings) {
+    const seconds = Number(settings && settings.aiQueryTimeoutSeconds);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0;
+  }
+
+  // Диапазон для запроса AI: время дашборда, но не длиннее aiQueryMaxRangeHours (отсчёт от конца диапазона).
+  function limitedRange(context, maxRangeHours) {
     const to = rangeMilliseconds(context.timeRange && context.timeRange.to, "now");
-    const response = await grafanaRuntime.getBackendSrv().post("/api/ds/query", { from: String(from), to: String(to), queries });
-    return response && response.results ? response.results : {};
+    let from = rangeMilliseconds(context.timeRange && context.timeRange.from, "now-1h");
+    const maxMs = Number(maxRangeHours) > 0 ? Number(maxRangeHours) * 3600000 : 0;
+    const clamped = Boolean(maxMs && to - from > maxMs);
+    if (clamped) from = to - maxMs;
+    return { from, to, clamped };
+  }
+
+  // /api/ds/query с таймаутом и остановкой по кнопке «Стоп».
+  async function runDatasourceQueries(context, queries, options) {
+    options = options || {};
+    const range = options.range || limitedRange(context, 0);
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (options.signal) {
+      if (options.signal.aborted) abort();
+      else options.signal.addEventListener("abort", abort, { once: true });
+    }
+    const timer = options.timeoutMs ? setTimeout(abort, options.timeoutMs) : undefined;
+    const headers = { "Content-Type": "application/json" };
+    if (orgId()) headers["X-Grafana-Org-Id"] = String(orgId());
+    try {
+      const response = await fetch(`${appSubUrl()}/api/ds/query`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers,
+        body: JSON.stringify({ from: String(range.from), to: String(range.to), queries }),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let data;
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (_) {
+        data = { message: text.slice(0, 500) };
+      }
+      // datasource возвращает ошибки отдельных запросов внутри results, даже при HTTP 4xx/5xx
+      if (!response.ok && !(data && data.results)) throw { status: response.status, data };
+      return data && data.results ? data.results : {};
+    } catch (reason) {
+      if (reason && reason.name === "AbortError") {
+        if (options.signal && options.signal.aborted) throw reason;
+        throw new Error(`Запрос к datasource не уложился в ${Math.round(options.timeoutMs / 1000)} с`);
+      }
+      throw reason;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (options.signal) options.signal.removeEventListener("abort", abort);
+    }
   }
 
   async function loadPanelData(settings, context) {
@@ -491,7 +582,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           maxDataPoints: Math.min(Number(target.maxDataPoints) || 100, 500),
           intervalMs: Number(target.intervalMs) || 60000,
         }))));
-        const results = await runDatasourceQueries(context, queries);
+        const results = await runDatasourceQueries(context, queries, { timeoutMs: queryTimeoutMs(settings) });
         return {
           panelId: panel.id,
           title: panel.title,
@@ -520,7 +611,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     return result;
   }
 
-  async function executeQueryTool(settings, context, args) {
+  async function executeQueryTool(settings, context, args, options) {
+    options = options || {};
     if (!args || typeof args !== "object") throw new Error("Некорректные аргументы запроса");
     const sources = contextDatasources(context);
     const source = sources.get(args.datasourceUid);
@@ -528,16 +620,16 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     if (!investigationTypes(settings).includes(source.type)) throw new Error(`Дополнительные запросы к ${source.type} запрещены настройками`);
     if (!isDatasourceAllowed(settings, { datasource: source }, { datasource: source })) throw new Error(`Datasource ${source.uid} не входит в allowlist`);
     if (!args.query || typeof args.query !== "object" || Array.isArray(args.query)) throw new Error("Query должен быть объектом");
-    const query = await interpolateQuery(Object.assign({}, args.query, {
-      datasource: source,
-      refId: args.query.refId || "AI",
-      maxDataPoints: Math.min(Number(args.query.maxDataPoints) || 100, 500),
-      intervalMs: Number(args.query.intervalMs) || 60000,
-    }));
-    const results = await runDatasourceQueries(context, [query]);
+    const limits = { refId: args.query.refId || "AI", datasource: source, maxDataPoints: Math.min(Number(args.query.maxDataPoints) || 100, 500), intervalMs: Number(args.query.intervalMs) || 60000 };
+    if (source.type === "loki") limits.maxLines = Math.min(Number(args.query.maxLines) || 200, 1000);
+    if (source.type === "tempo") limits.limit = Math.min(Number(args.query.limit) || 20, 100);
+    const query = await interpolateQuery(Object.assign({}, args.query, limits));
+    const range = limitedRange(context, settings.aiQueryMaxRangeHours);
+    const results = await runDatasourceQueries(context, [query], { range, timeoutMs: queryTimeoutMs(settings), signal: options.signal });
     return sanitizeForAI({
       reason: args.reason,
       datasource: source,
+      range: range.clamped ? { from: new Date(range.from).toISOString(), to: new Date(range.to).toISOString(), note: `Диапазон сокращён до ${settings.aiQueryMaxRangeHours} ч лимитом плагина` } : undefined,
       query,
       results: Object.keys(results).map((refId) => ({ refId, result: summarizeQueryResult(results[refId], panelMaxRows(settings)) })),
     });
@@ -587,15 +679,26 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const conversation = messages.slice();
     const steps = [];
     const rounds = mode === "off" ? 1 : MAX_TOOL_ROUNDS;
+    // post и executeQuery подменяются в evals/run.js, чтобы гонять тот же цикл без Grafana.
+    const post = options.post || postChat;
+    const execute = options.executeQuery || executeQueryTool;
+    const onUpdate = options.onUpdate || function () {};
+    const maxQueries = Number(settings.aiQueryMaxPerTurn) > 0 ? Number(settings.aiQueryMaxPerTurn) : Infinity;
+    let executed = 0;
+    async function runQuery(args) {
+      if (executed >= maxQueries) throw new Error(`Достигнут лимит ${maxQueries} запросов за один ответ`);
+      executed += 1;
+      return execute(settings, context, args, { signal: options.signal });
+    }
     for (let round = 0; round < rounds; round += 1) {
-      const last = round === rounds - 1;
+      const last = round === rounds - 1 || executed >= maxQueries;
       let result;
       try {
-        result = await postChat(settings, requestBody(settings, contextJson, conversation, { mode, last }), {
+        result = await post(settings, requestBody(settings, contextJson, conversation, { mode, last }), {
           signal: options.signal,
           onDelta: (acc) => {
             const split = splitThink(acc.content);
-            options.onUpdate({ content: split.content, reasoning: [acc.reasoning, split.reasoning].filter(Boolean).join("\n"), steps });
+            onUpdate({ content: split.content, reasoning: [acc.reasoning, split.reasoning].filter(Boolean).join("\n"), steps });
           },
         });
       } catch (reason) {
@@ -616,7 +719,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           let toolResult;
           try {
             args = JSON.parse(call.function.arguments || "{}");
-            toolResult = await executeQueryTool(settings, context, args);
+            toolResult = await runQuery(args);
             steps.push(stepSummary(args, toolResult));
           } catch (reason) {
             toolResult = { error: formatError(reason) };
@@ -624,7 +727,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           }
           conversation.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(toolResult).slice(0, 30000) });
         }
-        options.onUpdate({ content: "", reasoning, steps });
+        onUpdate({ content: "", reasoning, steps });
         continue;
       }
       const textCalls = mode === "text" && !last ? parseTextToolCalls(split.content) : [];
@@ -634,7 +737,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         for (const call of textCalls) {
           try {
             if (call.error) throw new Error(call.error);
-            const toolResult = await executeQueryTool(settings, context, call.args);
+            const toolResult = await runQuery(call.args);
             steps.push(stepSummary(call.args, toolResult));
             outputs.push(toolResult);
           } catch (reason) {
@@ -643,9 +746,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
             outputs.push({ request: call.args, error });
           }
         }
-        const finalHint = round === rounds - 2 ? "\nЭто последний раунд запросов: теперь дай итоговый ответ без блоков grafana-query." : "";
+        const finalHint = round === rounds - 2 || executed >= maxQueries ? "\nЛимит запросов исчерпан: теперь дай итоговый ответ без блоков grafana-query." : "";
         conversation.push({ role: "user", content: `Результаты запросов grafana-query:\n${JSON.stringify(outputs).slice(0, 30000)}${finalHint}` });
-        options.onUpdate({ content: "", reasoning, steps });
+        onUpdate({ content: "", reasoning, steps });
         continue;
       }
       const content = mode === "text" ? split.content.replace(/```grafana-query[\s\S]*?```/gi, "").trim() : split.content;
@@ -950,7 +1053,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     { label: "описания панелей", apply: (c) => mapPanels(c, (p) => omit(p, ["description"])) },
     { label: "запросы других панелей", apply: (c) => mapPanels(c, (p) => ({ id: p.id, title: p.title, row: p.row, type: p.type, datasource: p.datasource })) },
     { label: "результаты панелей", apply: (c) => Object.assign({}, c, { panelData: (c.panelData || []).map((item) => ({ panelId: item.panelId, title: item.title, error: item.error, skipped: item.skipped })) }) },
-    { label: "список панелей", apply: (c) => mapPanels(Object.assign({}, c, { panels: (c.panels || []).slice(0, 60) }), (p) => ({ id: p.id, title: p.title })) },
+    { label: "панели только с id и названием", apply: (c) => mapPanels(c, (p) => ({ id: p.id, title: p.title })) },
+    { label: "панели сверх 60", apply: (c) => (Array.isArray(c.panels) ? Object.assign({}, c, { panels: c.panels.slice(0, 60) }) : c) },
   ];
 
   // Уменьшает контекст по приоритетам, не разрезая JSON: сначала второстепенные поля, затем данные.
@@ -1295,7 +1399,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     return h("div", { style: styles.root, ref: rootRef },
       h("div", { style: styles.header },
         h("div", { style: styles.context }, context
-          ? `${context.dashboardTitle || "Текущая страница Grafana"}${context.panel ? ` · ${context.panel.title}` : ""}${settings ? ` · ${modelName(settings) || "модель не задана"}` : ""}`
+          ? `${context.dashboardTitle || "Текущая страница Grafana"}${context.panel ? ` · ${context.panel.title}` : ""}${settings ? ` · ${modelName(settings) || "модель не задана"}${settings.streaming !== false && isStreamUnsupported(settings) ? " (без stream)" : ""}` : ""}`
           : "Загрузка контекста…"),
         h("button", { type: "button", style: styles.smallButton, disabled: !history.length && !busy, onClick: newDialog }, "Новый диалог")
       ),
@@ -1413,6 +1517,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         if (apiKey || groqApiKey) data.secureJsonData = Object.assign({}, apiKey ? { apiKey } : {}, groqApiKey ? { groqApiKey } : {});
         await grafanaRuntime.getBackendSrv().post(`/api/plugins/${PLUGIN_ID}/settings`, data);
         cachedSettings = Object.assign({}, defaults, jsonData);
+        clearStreamUnsupported();
         localStorage.setItem("tech-ai-launcher-mode", jsonData.launcherMode || "both");
         setState(jsonData);
         setApiKey("");
@@ -1511,6 +1616,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         )
       ),
       field("Типы datasource для дополнительных запросов через запятую", "investigationDatasourceTypes"),
+      field("Запросы AI: максимальный диапазон, часов (0 = как у дашборда)", "aiQueryMaxRangeHours", "number"),
+      field("Запросы AI и панелей: таймаут, секунд (0 = без таймаута)", "aiQueryTimeoutSeconds", "number"),
+      field("Запросы AI: максимум за один ответ", "aiQueryMaxPerTurn", "number"),
       h("label", { style: styles.field },
         h("span", null, "Способ запуска"),
         h("select", { style: styles.input, value: state.launcherMode || "both", onChange: (event) => update({ launcherMode: event.target.value }) },
@@ -1720,7 +1828,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
   return {
     plugin,
-    // Чистые функции для unit-тестов (test/unit.test.js); Grafana это поле игнорирует.
-    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream },
+    // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
+    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults },
   };
 });
