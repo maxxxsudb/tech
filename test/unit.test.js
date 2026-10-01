@@ -152,7 +152,7 @@ test("sanitizeForAI вычищает секреты", () => {
 });
 
 test("requestBody: текстовый протокол без tools, native — с tools и tool_choice none на последнем раунде", () => {
-  const settings = { model: "m", streaming: true, toolsMode: "text", investigationDatasourceTypes: "loki,prometheus" };
+  const settings = { model: "m", streaming: true, toolsMode: "text", investigationDatasourceTypes: "loki,prometheus", contextDelivery: "inline" };
   const text = t.requestBody(settings, "{}", [], { mode: "text" });
   assert.equal(text.tools, undefined);
   assert.match(text.messages[0].content, /grafana-query/);
@@ -160,6 +160,31 @@ test("requestBody: текстовый протокол без tools, native — 
   const native = t.requestBody(settings, "{}", [], { mode: "native", last: true });
   assert.equal(native.tool_choice, "none");
   assert.equal(native.tools.length, 1);
+});
+
+test("контекст передаётся inline или отдельным именованным JSON-документом", () => {
+  const base = { model: "m", streaming: false, investigationDatasourceTypes: "loki" };
+  const inline = t.requestBody(Object.assign({}, base, { contextDelivery: "inline" }), '{"dashboardUid":"d"}', [], {});
+  assert.equal(inline.messages.length, 1);
+  assert.match(inline.messages[0].content, /"dashboardUid":"d"/);
+
+  const document = t.requestBody(Object.assign({}, base, { contextDelivery: "jsonDocument" }), '{"dashboardUid":"d"}', [], {});
+  assert.equal(document.messages.length, 2);
+  assert.match(document.messages[0].content, /grafana-context\.json/);
+  assert.match(document.messages[1].content, /^Файл: grafana-context\.json/);
+  assert.match(document.messages[1].content, /"dashboardUid":"d"/);
+  assert.equal(t.resolveContextDelivery(Object.assign({}, base, { contextDelivery: "auto" })), "jsonDocument");
+});
+
+test("выбор панелей оставляет в контексте только отмеченные панели", () => {
+  const context = { dashboardUid: "d", panels: [{ id: 1, title: "CPU" }, { id: 2, title: "Logs" }] };
+  assert.deepEqual(t.availablePanels(context).map((panel) => panel.id), [1, 2]);
+  assert.deepEqual(t.selectContextPanels(context, [2]).panels, [{ id: 2, title: "Logs" }]);
+  assert.deepEqual(t.selectContextPanels(context, []).panels, []);
+
+  const selected = { dashboardUid: "d", panel: { id: 7, title: "Latency" } };
+  assert.equal(t.selectContextPanels(selected, [7]).panel.id, 7);
+  assert.equal(t.selectContextPanels(selected, []).panel, undefined);
 });
 
 test("пустой API key не добавляет auth-маршрут для custom provider", () => {

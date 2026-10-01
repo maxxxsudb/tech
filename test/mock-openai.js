@@ -10,7 +10,9 @@ http
       const last = messages.at(-1)?.content || '';
       const system = messages.find((message) => message.role === 'system')?.content || '';
       const marker = '\n\nТекущий контекст Grafana:\n';
-      const rawContext = system.includes(marker) ? system.slice(system.indexOf(marker) + marker.length) : '{}';
+      const documentMessage = messages.find((message) => typeof message.content === 'string' && message.content.startsWith('Файл: grafana-context.json'));
+      const documentMatch = documentMessage && /```json\n([\s\S]*?)\n```/.exec(documentMessage.content);
+      const rawContext = documentMatch ? documentMatch[1] : (system.includes(marker) ? system.slice(system.indexOf(marker) + marker.length) : '{}');
       let context;
       try {
         context = JSON.parse(rawContext);
@@ -23,7 +25,7 @@ http
           choices: [{
             message: {
               role: 'assistant',
-              content: `mock: ${last}\n\nПолученный контекст Grafana:\n${JSON.stringify(context, null, 2)}`,
+              content: `mock: ${last}\n\nСпособ контекста: ${documentMatch ? 'grafana-context.json' : 'system prompt'}\nПолученный контекст Grafana:\n${JSON.stringify(context, null, 2)}`,
             },
           }],
         })
