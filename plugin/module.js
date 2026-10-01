@@ -151,6 +151,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     return settings.provider === "groq" ? settings.groqModel : settings.model;
   }
 
+  function shouldRetryWithoutStream(body, status, options) {
+    return Boolean(body && body.stream && !(options && options.noStreamFallback) && [400, 405, 415, 422, 501].includes(Number(status)));
+  }
+
   function estimateTokens(value) {
     const text = typeof value === "string" ? value : JSON.stringify(value || "");
     return Math.ceil(text.length / CHARS_PER_TOKEN);
@@ -316,6 +320,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         data = JSON.parse(text);
       } catch (_) {
         data = { message: text.slice(0, 500) || response.statusText };
+      }
+      if (shouldRetryWithoutStream(body, response.status, options)) {
+        return postChat(settings, Object.assign({}, body, { stream: false }), Object.assign({}, options, { noStreamFallback: true }));
       }
       throw { status: response.status, data };
     }
@@ -1714,6 +1721,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Чистые функции для unit-тестов (test/unit.test.js); Grafana это поле игнорирует.
-    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute },
+    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream },
   };
 });

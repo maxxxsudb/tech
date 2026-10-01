@@ -160,6 +160,14 @@ test("пустой API key не добавляет auth-маршрут для cu
   assert.equal(t.proxyRoute({ provider: "custom", useAuth: true, _hasApiKey: true }), "chat-auth");
 });
 
+test("неподдерживаемый stream автоматически повторяется без streaming", () => {
+  assert.equal(t.shouldRetryWithoutStream({ stream: true }, 400, {}), true);
+  assert.equal(t.shouldRetryWithoutStream({ stream: true }, 422, {}), true);
+  assert.equal(t.shouldRetryWithoutStream({ stream: false }, 400, {}), false);
+  assert.equal(t.shouldRetryWithoutStream({ stream: true }, 400, { noStreamFallback: true }), false);
+  assert.equal(t.shouldRetryWithoutStream({ stream: true }, 401, {}), false);
+});
+
 test("exploreUrl учитывает appSubUrl и диапазон времени", () => {
   const url = t.exploreUrl({ timeRange: { from: "now-6h", to: "now" } }, { uid: "prom", type: "prometheus" }, { expr: "up" });
   assert.ok(url.startsWith("/crf/dashboard/explore?schemaVersion=1&orgId=1&panes="));
