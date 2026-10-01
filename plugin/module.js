@@ -204,6 +204,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     "```dashboard-json\\n{\"panelId\": 2, \"targets\": [...]}\\n```. " +
     "Не добавляй в этот блок другие поля и не меняй datasource без явной просьбы пользователя.";
 
+  const evidenceContract =
+    "Опирайся на фактические результаты panelData как на источник истины. " +
+    "Если frames пуст, totalRows равен 0 или запрос не вернул строк, прямо скажи, что за выбранный период данных не найдено; не выдумывай события, значения и причины. " +
+    "Предлагаемые запросы и гипотезы явно отделяй от уже наблюдаемых фактов и не обещай, что новый фильтр обязательно найдёт данные.";
+
   function textToolContract(settings) {
     return (
       "Ты можешь выполнять read-only запросы к datasource текущего дашборда (типы: " + investigationTypes(settings).join(", ") + "). " +
@@ -235,6 +240,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   function systemContent(settings, contextJson, mode) {
     return [
       settings.systemPrompt || defaults.systemPrompt,
+      evidenceContract,
       patchContract,
       mode === "text" ? textToolContract(settings) : "",
     ].filter(Boolean).join("\n") + CONTEXT_MARKER + contextJson;
@@ -510,6 +516,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     return Math.max(1, Math.min(100, Number(settings.maxPanelRows) || 20));
   }
 
+  function positiveInt(value, fallback, maximum) {
+    const parsed = Math.floor(Number(value));
+    return Math.max(1, Math.min(maximum, Number.isFinite(parsed) && parsed > 0 ? parsed : fallback));
+  }
+
   function queryTimeoutMs(settings) {
     const seconds = Number(settings && settings.aiQueryTimeoutSeconds);
     return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0;
@@ -568,7 +579,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     }
   }
 
-  async function loadPanelData(settings, context) {
+  async function loadPanelData(settings, context, options) {
+    options = options || {};
     if (settings.includePanelData === false) return [];
     const panels = context.panel ? [context.panel] : (context.panels || []).slice(0, 4);
     const maxRows = panelMaxRows(settings);
@@ -582,7 +594,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           maxDataPoints: Math.min(Number(target.maxDataPoints) || 100, 500),
           intervalMs: Number(target.intervalMs) || 60000,
         }))));
-        const results = await runDatasourceQueries(context, queries, { timeoutMs: queryTimeoutMs(settings) });
+        const results = await runDatasourceQueries(context, queries, { timeoutMs: queryTimeoutMs(settings), signal: options.signal });
         return {
           panelId: panel.id,
           title: panel.title,
@@ -621,8 +633,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     if (!isDatasourceAllowed(settings, { datasource: source }, { datasource: source })) throw new Error(`Datasource ${source.uid} не входит в allowlist`);
     if (!args.query || typeof args.query !== "object" || Array.isArray(args.query)) throw new Error("Query должен быть объектом");
     const limits = { refId: args.query.refId || "AI", datasource: source, maxDataPoints: Math.min(Number(args.query.maxDataPoints) || 100, 500), intervalMs: Number(args.query.intervalMs) || 60000 };
-    if (source.type === "loki") limits.maxLines = Math.min(Number(args.query.maxLines) || 200, 1000);
-    if (source.type === "tempo") limits.limit = Math.min(Number(args.query.limit) || 20, 100);
+    if (source.type === "loki") limits.maxLines = positiveInt(args.query.maxLines, 200, 200);
+    if (source.type === "tempo") limits.limit = positiveInt(args.query.limit, 20, 20);
     const query = await interpolateQuery(Object.assign({}, args.query, limits));
     const range = limitedRange(context, settings.aiQueryMaxRangeHours);
     const results = await runDatasourceQueries(context, [query], { range, timeoutMs: queryTimeoutMs(settings), signal: options.signal });
@@ -683,7 +695,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const post = options.post || postChat;
     const execute = options.executeQuery || executeQueryTool;
     const onUpdate = options.onUpdate || function () {};
-    const maxQueries = Number(settings.aiQueryMaxPerTurn) > 0 ? Number(settings.aiQueryMaxPerTurn) : Infinity;
+    const maxQueries = positiveInt(settings.aiQueryMaxPerTurn, defaults.aiQueryMaxPerTurn, 20);
     let executed = 0;
     async function runQuery(args) {
       if (executed >= maxQueries) throw new Error(`Достигнут лимит ${maxQueries} запросов за один ответ`);
@@ -1013,9 +1025,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     return context;
   }
 
-  async function contextWithLiveData(settings, context) {
+  async function contextWithLiveData(settings, context, options) {
     const next = Object.assign({}, context);
-    next.panelData = await loadPanelData(settings, context);
+    next.panelData = await loadPanelData(settings, context, options);
     return sanitizeForAI(next);
   }
 
@@ -1293,7 +1305,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       try {
         assertAllowedRole(settings);
         const screenshot = includeScreenshot ? await captureDashboardScreenshot(rootRef.current) : undefined;
-        const requestContext = await contextWithLiveData(settings, context);
+        const requestContext = await contextWithLiveData(settings, context, { signal: controller.signal });
         setInput("");
         const plan = planRequest(settings, requestContext, apiHistory(history), prompt);
         userMessage = { role: "user", content: prompt, note: (screenshotNote(screenshot) + panelDataNote(requestContext)).trim() };
@@ -1829,6 +1841,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults },
+    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries },
   };
 });

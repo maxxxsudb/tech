@@ -194,6 +194,26 @@ test("limitedRange сокращает диапазон запросов AI от 
   assert.equal(t.limitedRange({ timeRange: { from: "now-30d", to: "now" } }, 0).clamped, false);
 });
 
+test("жёсткие лимиты запросов нельзя увеличить настройками модели", () => {
+  assert.equal(t.positiveInt(1000, 200, 200), 200);
+  assert.equal(t.positiveInt(100, 20, 20), 20);
+  assert.equal(t.positiveInt(0, 6, 20), 6);
+  assert.equal(t.positiveInt(-10, 6, 20), 6);
+  assert.equal(t.positiveInt(2.9, 6, 20), 2);
+});
+
+test("остановка пользователя прерывает запрос к datasource", async () => {
+  const fetchImpl = async (_url, init) => new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+  });
+  await withBrowserGlobals(fetchImpl, async () => {
+    const controller = new AbortController();
+    const pending = t.runDatasourceQueries({ timeRange: { from: "now-1h", to: "now" } }, [], { signal: controller.signal });
+    controller.abort();
+    await assert.rejects(pending, (reason) => reason && reason.name === "AbortError");
+  });
+});
+
 function withBrowserGlobals(fetchImpl, fn) {
   const store = new Map();
   const previous = { fetch: global.fetch, sessionStorage: global.sessionStorage };

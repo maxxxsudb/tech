@@ -30,7 +30,16 @@ const puppeteer = require('puppeteer');
     [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Отправить').click();
   });
   await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('NON_STREAM_FALLBACK_OK'), { timeout: 30000 });
+  await page.type('#tech-ai-assistant-drawer textarea', 'second fallback test');
+  await page.evaluate(() => {
+    const drawer = document.querySelector('#tech-ai-assistant-drawer');
+    [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Отправить').click();
+  });
+  await page.waitForFunction(() => {
+    const drawer = document.querySelector('#tech-ai-assistant-drawer');
+    return !drawer.querySelector('textarea').disabled && (drawer.innerText.match(/NON_STREAM_FALLBACK_OK/g) || []).length === 2;
+  }, { timeout: 30000 });
   console.log(JSON.stringify({ streamValues }));
-  if (streamValues.length !== 2 || streamValues[0] !== true || streamValues[1] !== false) throw new Error(`Unexpected fallback sequence: ${JSON.stringify(streamValues)}`);
+  if (JSON.stringify(streamValues) !== JSON.stringify([true, false, false])) throw new Error(`Unexpected fallback sequence: ${JSON.stringify(streamValues)}`);
   await browser.close();
 })().catch((error) => { console.error(error.stack || error); process.exit(1); });
