@@ -1,0 +1,91 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "app",
+  "name": "Tech AI Assistant",
+  "id": "tech-ai-assistant-app",
+  "autoEnabled": true,
+  "preload": true,
+  "info": {
+    "description": "AI Assistant with current dashboard and panel context",
+    "author": { "name": "Tech" },
+    "keywords": ["ai", "assistant", "dashboard", "promql", "logql"],
+    "logos": { "small": "logo.svg", "large": "logo.svg" },
+    "version": "0.4.0",
+    "updated": "2026-10-01"
+  },
+  "includes": [
+    {
+      "addToNav": true,
+      "defaultNav": true,
+      "name": "AI Assistant",
+      "path": "/a/tech-ai-assistant-app",
+      "role": "Viewer",
+      "type": "page"
+    }
+  ],
+  "extensions": {
+    "addedComponents": [
+      {
+        "title": "Tech AI Assistant",
+        "description": "AI Assistant with current Grafana context",
+        "targets": ["grafana/extension-sidebar/v0-alpha"]
+      }
+    ],
+    "addedLinks": [
+      {
+        "title": "Tech AI Assistant",
+        "description": "Open AI Assistant",
+        "targets": ["grafana/extension-sidebar/v0-alpha"]
+      },
+      {
+        "title": "Спросить AI",
+        "description": "Передать панель и её запросы AI Assistant",
+        "targets": ["grafana/dashboard/panel/menu"]
+      },
+      {
+        "title": "Открыть Tech AI Assistant",
+        "description": "AI-анализ текущей страницы Grafana",
+        "targets": ["grafana/commandpalette/action"]
+      },
+      {
+        "title": "Спросить AI",
+        "description": "Передать текущий контекст Explore в AI Assistant",
+        "targets": ["grafana/explore/toolbar/action"]
+      }
+    ]
+  },
+  "routes": [
+    {
+      "path": "groq-chat",
+      "method": "POST",
+      "reqRole": "Viewer",
+      "url": "https://api.groq.com/openai/v1/chat/completions",
+      "headers": [
+        { "name": "Authorization", "content": "Bearer {{ .SecureJsonData.groqApiKey }}" },
+        { "name": "Content-Type", "content": "application/json" }
+      ]
+    },
+    {
+      "path": "chat-auth",
+      "method": "POST",
+      "reqRole": "Viewer",
+      "url": "{{ .JsonData.apiUrl }}{{ .JsonData.apiPath }}",
+      "headers": [
+        { "name": "Authorization", "content": "{{ .JsonData.authScheme }} {{ .SecureJsonData.apiKey }}" },
+        { "name": "Content-Type", "content": "application/json" }
+      ]
+    },
+    {
+      "path": "chat",
+      "method": "POST",
+      "reqRole": "Viewer",
+      "url": "{{ .JsonData.apiUrl }}{{ .JsonData.apiPath }}",
+      "headers": [{ "name": "Content-Type", "content": "application/json" }]
+    }
+  ],
+  "dependencies": {
+    "grafanaDependency": ">=13.0.2",
+    "plugins": []
+  },
+  "buildMode": "production"
+}
