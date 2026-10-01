@@ -1,6 +1,6 @@
 # Tech AI Assistant
 
-Текущая версия: **0.6.1**.
+Текущая версия: **0.6.2**.
 
 Компактный frontend-only app plugin для Grafana 13.0.2. Сборочные зависимости и отдельный backend-контейнер не нужны: ключ хранит Grafana в `secureJsonData`, запросы идут через штатный plugin proxy.
 
@@ -19,7 +19,7 @@ allow_loading_unsigned_plugins = tech-ai-assistant-app
 
 - `Шаблон провайдера`: заполняет поля для Ollama, LM Studio, vLLM, llama.cpp server, OpenAI, Gemini или Groq.
 - `API URL`: адрес OpenAI-compatible сервиса так, как его видит сервер Grafana (например `http://ollama:11434`).
-- `Chat completions path`: обычно `/v1/chat/completions`; `Models path`: обычно `/v1/models`.
+- `Chat completions path`: обычно `/v1/chat/completions`; `Models path`: обычно `/v1/models`. Можно указать любой свой путь. Итоговый адрес = API URL + путь, он показан под полями; если API URL уже заканчивается на `/v1`, повтор `/v1` из пути убирается при сохранении.
 - `Model`: имя модели; кнопка **Загрузить список моделей** подставляет варианты из `/v1/models`.
 - **Проверить подключение** отправляет короткий запрос с сохранёнными настройками и показывает ответ или понятную ошибку.
 - `Окно контекста модели`: размер окна в токенах. Плагин сжимает контекст и историю под этот лимит. Для Ollama задайте такое же значение через `OLLAMA_CONTEXT_LENGTH` или `num_ctx`, иначе Ollama молча отбросит начало промпта вместе с контекстом дашборда.
