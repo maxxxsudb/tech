@@ -23,7 +23,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     authScheme: "Bearer",
     reasoningEffort: "",
     maxTokens: 0,
-    contextTokens: 16000,
+    contextTokens: 8192,
     contextDelivery: "auto",
     streaming: true,
     toolsMode: "text",
@@ -253,8 +253,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
   function resolveContextDelivery(settings) {
     const value = settings.contextDelivery || "auto";
-    if (value === "inline") return "inline";
-    return "jsonDocument";
+    return value === "jsonDocument" ? "jsonDocument" : "inline";
   }
 
   function contextDocumentMessage(contextJson) {
@@ -264,15 +263,30 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     };
   }
 
+  function attachContextDocument(messages, contextJson) {
+    const next = messages.slice();
+    const text = contextDocumentMessage(contextJson).content;
+    for (let index = next.length - 1; index >= 0; index -= 1) {
+      if (next[index].role !== "user") continue;
+      const content = next[index].content;
+      next[index] = Object.assign({}, next[index], {
+        content: Array.isArray(content)
+          ? content.concat([{ type: "text", text }])
+          : `${String(content || "")}\n\n${text}`.trim(),
+      });
+      return next;
+    }
+    return [contextDocumentMessage(contextJson)].concat(next);
+  }
+
   function requestBody(settings, contextJson, messages, options) {
     options = options || {};
     const delivery = resolveContextDelivery(settings);
-    const requestMessages = [{ role: "system", content: systemContent(settings, contextJson, options.mode) }];
-    if (delivery === "jsonDocument") requestMessages.push(contextDocumentMessage(contextJson));
+    const requestMessages = delivery === "jsonDocument" ? attachContextDocument(messages, contextJson) : messages;
     const body = {
       model: modelName(settings),
       stream: settings.streaming !== false,
-      messages: requestMessages.concat(messages),
+      messages: [{ role: "system", content: systemContent(settings, contextJson, options.mode) }].concat(requestMessages),
     };
     if (settings.reasoningEffort) body.reasoning_effort = settings.reasoningEffort;
     const maxTokens = Number(settings.maxTokens);
@@ -1692,11 +1706,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       h("label", { style: styles.field },
         h("span", null, "Как передавать контекст Grafana"),
         h("select", { style: styles.input, value: state.contextDelivery || "auto", onChange: (event) => update({ contextDelivery: event.target.value }) },
-          h("option", { value: "auto" }, "Автоматически — отдельный grafana-context.json (рекомендуется)"),
-          h("option", { value: "inline" }, "Внутри system prompt"),
-          h("option", { value: "jsonDocument" }, "Отдельный JSON-документ (совместимый режим)")
+          h("option", { value: "auto" }, "Автоматически — внутри system prompt (максимальная совместимость)"),
+          h("option", { value: "inline" }, "Внутри system prompt (явно)"),
+          h("option", { value: "jsonDocument" }, "JSON-документ в текущем сообщении (расширенный режим)")
         ),
-        h("span", { style: styles.context }, "Для chat/completions документ передаётся отдельным именованным сообщением без загрузки в хранилище провайдера.")
+        h("span", { style: styles.context }, "Авто подходит простым локальным моделям. JSON-документ добавляется к текущему user-сообщению без нарушения чередования ролей и без загрузки в хранилище провайдера.")
       ),
       field("Max output tokens (0 = provider default)", "maxTokens", "number"),
       field("Reasoning effort (optional)", "reasoningEffort"),
@@ -1923,6 +1937,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels },
+    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument },
   };
 });

@@ -168,12 +168,25 @@ test("контекст передаётся inline или отдельным и�
   assert.equal(inline.messages.length, 1);
   assert.match(inline.messages[0].content, /"dashboardUid":"d"/);
 
-  const document = t.requestBody(Object.assign({}, base, { contextDelivery: "jsonDocument" }), '{"dashboardUid":"d"}', [], {});
+  const document = t.requestBody(Object.assign({}, base, { contextDelivery: "jsonDocument" }), '{"dashboardUid":"d"}', [{ role: "user", content: "вопрос" }], {});
   assert.equal(document.messages.length, 2);
   assert.match(document.messages[0].content, /grafana-context\.json/);
-  assert.match(document.messages[1].content, /^Файл: grafana-context\.json/);
+  assert.match(document.messages[1].content, /^вопрос\n\nФайл: grafana-context\.json/);
   assert.match(document.messages[1].content, /"dashboardUid":"d"/);
-  assert.equal(t.resolveContextDelivery(Object.assign({}, base, { contextDelivery: "auto" })), "jsonDocument");
+  assert.equal(t.resolveContextDelivery(Object.assign({}, base, { contextDelivery: "auto" })), "inline");
+  assert.equal(t.defaults.contextTokens, 8192);
+});
+
+test("JSON-документ не создаёт два user-сообщения подряд и поддерживает снимок", () => {
+  const messages = [
+    { role: "user", content: "первый" },
+    { role: "assistant", content: "ответ" },
+    { role: "user", content: [{ type: "text", text: "второй" }, { type: "image_url", image_url: { url: "data:image/jpeg;base64,x" } }] },
+  ];
+  const attached = t.attachContextDocument(messages, "{}");
+  assert.deepEqual(attached.map((message) => message.role), ["user", "assistant", "user"]);
+  assert.equal(attached[2].content.length, 3);
+  assert.match(attached[2].content[2].text, /^Файл: grafana-context\.json/);
 });
 
 test("выбор панелей оставляет в контексте только отмеченные панели", () => {
