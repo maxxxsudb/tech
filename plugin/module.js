@@ -99,6 +99,23 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     return value.startsWith("/") ? value : `/${value}`;
   }
 
+  // Grafana склеивает адрес как apiUrl + path. Если API URL уже заканчивается на /v1
+  // (или /v1beta/openai), а путь начинается с того же, убираем повтор из пути.
+  function joinEndpoint(apiUrl, path) {
+    const base = String(apiUrl || "").trim().replace(/\/+$/, "");
+    let tail = path ? normalizePath(path) : "";
+    const baseParts = base.replace(/^[a-z]+:\/\/[^/]*/i, "").split("/").filter(Boolean);
+    const tailParts = tail.split("/").filter(Boolean);
+    for (let size = Math.min(baseParts.length, tailParts.length - 1); size > 0; size -= 1) {
+      const overlap = tailParts.slice(0, size);
+      if (/^v\d/i.test(overlap[0]) && overlap.join("/") === baseParts.slice(-size).join("/")) {
+        tail = `/${tailParts.slice(size).join("/")}`;
+        break;
+      }
+    }
+    return { apiUrl: base, path: tail, url: base + tail };
+  }
+
   function formatError(reason) {
     if (reason && reason.name === "AbortError") return "Запрос остановлен";
     const rawData = reason && reason.data;
@@ -1595,6 +1612,23 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       );
     }
 
+    function endpointPreview() {
+      let chat;
+      let list;
+      try {
+        chat = joinEndpoint(state.apiUrl, state.apiPath || defaults.apiPath);
+        list = state.modelsPath ? joinEndpoint(state.apiUrl, state.modelsPath) : null;
+      } catch (reason) {
+        return h("div", { style: styles.context }, `❌ ${reason.message}`);
+      }
+      const typed = String(state.apiUrl || "").trim().replace(/\/+$/, "") + (state.apiPath ? normalizePath(state.apiPath) : "");
+      return h("div", { style: styles.context },
+        h("div", null, `Запросы чата пойдут на: ${chat.url}`),
+        list ? h("div", null, `Список моделей: ${list.url}`) : null,
+        chat.url !== typed ? h("div", null, "Повтор версии в пути (например /v1/v1) будет убран при сохранении.") : null
+      );
+    }
+
     function checkbox(label, key, defaultValue) {
       return h("label", null,
         h("input", { type: "checkbox", checked: state[key] === undefined ? defaultValue : Boolean(state[key]), onChange: (event) => update({ [key]: event.target.checked }) }),
@@ -1611,7 +1645,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     async function save() {
       setStatus("Сохранение…");
       try {
-        const jsonData = Object.assign({}, omit(state, ["_hasApiKey", "_hasGroqApiKey"]), { apiPath: state.provider === "groq" ? state.apiPath : normalizePath(state.apiPath), modelsPath: state.modelsPath ? normalizePath(state.modelsPath) : "" });
+        const jsonData = Object.assign({}, omit(state, ["_hasApiKey", "_hasGroqApiKey"]));
+        if (state.provider !== "groq") {
+          const chat = joinEndpoint(state.apiUrl, state.apiPath || defaults.apiPath);
+          Object.assign(jsonData, { apiUrl: chat.apiUrl, apiPath: chat.path, modelsPath: state.modelsPath ? joinEndpoint(state.apiUrl, state.modelsPath).path : "" });
+        }
         const data = { enabled: true, pinned: true, jsonData };
         if (apiKey || groqApiKey) data.secureJsonData = Object.assign({}, apiKey ? { apiKey } : {}, groqApiKey ? { groqApiKey } : {});
         await grafanaRuntime.getBackendSrv().post(`/api/plugins/${PLUGIN_ID}/settings`, data);
@@ -1684,8 +1722,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           )
         : h(React.Fragment, null,
             field("API URL (как его видит сервер Grafana, например http://ollama:11434)", "apiUrl"),
-            field("Chat completions path", "apiPath"),
+            field("Chat completions path (любой свой путь, например /llm/generate)", "apiPath"),
             field("Models path (для списка моделей)", "modelsPath"),
+            endpointPreview(),
             h("label", { style: styles.field },
               h("span", null, `API key${keyIsSet ? " (уже сохранён)" : ""}`),
               h("input", { style: styles.input, type: "password", value: apiKey, placeholder: keyIsSet ? "Оставьте пустым, чтобы не менять" : "", onChange: (event) => { setApiKey(event.target.value); setDirty(true); } })
@@ -1937,6 +1976,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument },
+    __test: { joinEndpoint, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument },
   };
 });

@@ -321,3 +321,13 @@ test("fitContext при сильном сжатии сохраняет назв�
   assert.ok(fitted.reductions.includes("панели только с id и названием"));
   assert.ok(!fitted.reductions.includes("панели сверх 60"));
 });
+
+test("joinEndpoint убирает повтор /v1 между API URL и путём и не трогает свои пути", () => {
+  assert.equal(t.joinEndpoint("http://host/llm/v1", "/v1/chat/completions").url, "http://host/llm/v1/chat/completions");
+  assert.equal(t.joinEndpoint("http://host/llm/v1/", "/v1/models").path, "/models");
+  assert.equal(t.joinEndpoint("https://g.com/v1beta/openai", "/v1beta/openai/chat/completions").path, "/chat/completions");
+  assert.equal(t.joinEndpoint("http://ollama:11434", "/v1/chat/completions").url, "http://ollama:11434/v1/chat/completions");
+  assert.equal(t.joinEndpoint("http://host/llm", "llm/generate").url, "http://host/llm/llm/generate");
+  assert.equal(t.joinEndpoint("http://host/v1", "/v1").path, "/v1");
+  assert.throws(() => t.joinEndpoint("http://host", "/../x"));
+});
