@@ -113,10 +113,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
   async function getSettings() {
     const result = await grafanaRuntime.getBackendSrv().get(`/api/plugins/${PLUGIN_ID}/settings`);
+    const secureJsonFields = result.secureJsonFields || {};
     return {
-      jsonData: Object.assign({}, defaults, result.jsonData || {}),
+      jsonData: Object.assign({}, defaults, result.jsonData || {}, {
+        _hasApiKey: Boolean(secureJsonFields.apiKey),
+        _hasGroqApiKey: Boolean(secureJsonFields.groqApiKey),
+      }),
       savedJsonData: result.jsonData || {},
-      secureJsonFields: result.secureJsonFields || {},
+      secureJsonFields,
     };
   }
 
@@ -131,12 +135,12 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
   function proxyRoute(settings) {
     if (settings.provider === "groq") return "groq-chat";
-    return settings.useAuth ? "chat-auth" : "chat";
+    return settings.useAuth && settings._hasApiKey !== false ? "chat-auth" : "chat";
   }
 
   function modelsRoute(settings) {
     if (settings.provider === "groq") return "groq-models";
-    return settings.useAuth ? "models-auth" : "models";
+    return settings.useAuth && settings._hasApiKey !== false ? "models-auth" : "models";
   }
 
   function proxyUrl(route) {
@@ -294,6 +298,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
   async function postChat(settings, body, options) {
     options = options || {};
+    if (settings.provider === "groq" && settings._hasGroqApiKey === false) throw new Error("Для Groq не задан API key");
     if (settings.provider !== "groq") normalizePath(settings.apiPath);
     const headers = { "Content-Type": "application/json", Accept: body.stream ? "text/event-stream" : "application/json" };
     if (orgId()) headers["X-Grafana-Org-Id"] = String(orgId());
@@ -1041,7 +1046,21 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   }
 
   function copyText(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(() => legacyCopyText(text));
+      return;
+    }
+    legacyCopyText(text);
+  }
+
+  function legacyCopyText(text) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    Object.assign(textarea.style, { position: "fixed", opacity: "0", pointerEvents: "none" });
+    document.body.appendChild(textarea);
+    textarea.select();
+    try { document.execCommand("copy"); } catch (_) {}
+    textarea.remove();
   }
 
   function CodeBlock(props) {
@@ -1184,7 +1203,16 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         if (reason && reason.name === "AbortError" && userMessage) {
           setHistory((current) => current.concat([{ role: "assistant", content: `${partial.content || ""}\n\n_(ответ остановлен)_`.trim(), reasoning: partial.reasoning, steps: partial.steps }]));
         } else {
-          setError(formatError(reason));
+          const message = formatError(reason);
+          if (partial.content || partial.reasoning || (partial.steps || []).length) {
+            setHistory((current) => current.concat([{
+              role: "assistant",
+              content: `${partial.content || ""}\n\n_(ответ не завершён: ${message})_`.trim(),
+              reasoning: partial.reasoning,
+              steps: partial.steps,
+            }]));
+          }
+          setError(message);
         }
       } finally {
         abortRef.current = null;
@@ -1274,7 +1302,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           }
         })())
       ) : null,
-      error ? h("div", { style: styles.error }, error) : null,
+      error ? h("div", { style: styles.error, "data-testid": "tech-ai-error" }, error) : null,
       h("div", { style: styles.history, ref: historyRef },
         history.length === 0 && !pending ? h("div", { style: styles.context }, "Задайте вопрос по текущему дашборду или панели.") : null,
         history.map((message, index) => messageView(message, index, false)),
@@ -1373,7 +1401,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     async function save() {
       setStatus("Сохранение…");
       try {
-        const jsonData = Object.assign({}, state, { apiPath: state.provider === "groq" ? state.apiPath : normalizePath(state.apiPath), modelsPath: state.modelsPath ? normalizePath(state.modelsPath) : "" });
+        const jsonData = Object.assign({}, omit(state, ["_hasApiKey", "_hasGroqApiKey"]), { apiPath: state.provider === "groq" ? state.apiPath : normalizePath(state.apiPath), modelsPath: state.modelsPath ? normalizePath(state.modelsPath) : "" });
         const data = { enabled: true, pinned: true, jsonData };
         if (apiKey || groqApiKey) data.secureJsonData = Object.assign({}, apiKey ? { apiKey } : {}, groqApiKey ? { groqApiKey } : {});
         await grafanaRuntime.getBackendSrv().post(`/api/plugins/${PLUGIN_ID}/settings`, data);
@@ -1452,6 +1480,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
               h("input", { style: styles.input, type: "password", value: apiKey, placeholder: keyIsSet ? "Оставьте пустым, чтобы не менять" : "", onChange: (event) => { setApiKey(event.target.value); setDirty(true); } })
             ),
             checkbox("Передавать Authorization header", "useAuth", true),
+            state.useAuth !== false && state._hasApiKey === false ? h("div", { style: styles.context }, "API key пустой — Authorization header отправляться не будет.") : null,
             field("Authorization scheme", "authScheme")
           ),
       field(state.provider === "groq" ? "Groq model" : "Model", modelField, "text", { list: "tech-ai-models" }),
@@ -1685,6 +1714,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Чистые функции для unit-тестов (test/unit.test.js); Grafana это поле игнорирует.
-    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey },
+    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute },
   };
 });

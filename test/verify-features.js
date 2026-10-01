@@ -50,6 +50,15 @@ const puppeteer = require('puppeteer');
   if (!text.includes('alice')) throw new Error('Live datasource rows are missing from context preview');
   if (text.includes('gsk_supersecretvalue12345') || !text.includes('[REDACTED]')) throw new Error('Secret redaction failed');
   if (!text.includes('Применить к дашборду')) throw new Error('Dashboard diff/apply control is missing');
+  await page.evaluate(() => document.querySelector('#tech-ai-assistant-drawer button[title^="Закрыть"]').click());
+  await page.click('#tech-ai-assistant-launcher');
+  await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('Исправленный запрос'), { timeout: 10000 });
+  await page.evaluate(() => {
+    const drawer = document.querySelector('#tech-ai-assistant-drawer');
+    [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Новый диалог').click();
+  });
+  const cleared = await page.$eval('#tech-ai-assistant-drawer', (node) => node.innerText);
+  if (cleared.includes('Исправленный запрос')) throw new Error('New dialog did not clear persisted history');
   console.log('feature-test=ok');
   await browser.close();
 })().catch((error) => {

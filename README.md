@@ -1,5 +1,7 @@
 # Tech AI Assistant
 
+Текущая версия: **0.5.1**.
+
 Компактный frontend-only app plugin для Grafana 13.0.2. Сборочные зависимости и отдельный backend-контейнер не нужны: ключ хранит Grafana в `secureJsonData`, запросы идут через штатный plugin proxy.
 
 ## Установка
@@ -25,7 +27,7 @@ allow_loading_unsigned_plugins = tech-ai-assistant-app
 - `Как модель выполняет дополнительные запросы`: по умолчанию текстовый протокол, работающий с любой моделью без поддержки tools; можно включить native tools или native с откатом на текст.
 - `Reasoning effort`: необязательный уровень рассуждения, например `low` для Gemini.
 - `Max output tokens`: ограничение длины ответа; `0` использует значение провайдера.
-- `API key`: хранится зашифрованным в Grafana.
+- `API key`: хранится зашифрованным в Grafana. Для внутреннего сервиса ключ можно оставить пустым — Authorization header отправляться не будет.
 - `Authorization header`: отключить для внутреннего сервиса без авторизации.
 
 ### Groq Free

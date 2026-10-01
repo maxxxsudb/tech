@@ -154,6 +154,12 @@ test("requestBody: текстовый протокол без tools, native — 
   assert.equal(native.tools.length, 1);
 });
 
+test("пустой API key не добавляет auth-маршрут для custom provider", () => {
+  assert.equal(t.proxyRoute({ provider: "custom", useAuth: true, _hasApiKey: false }), "chat");
+  assert.equal(t.modelsRoute({ provider: "custom", useAuth: true, _hasApiKey: false }), "models");
+  assert.equal(t.proxyRoute({ provider: "custom", useAuth: true, _hasApiKey: true }), "chat-auth");
+});
+
 test("exploreUrl учитывает appSubUrl и диапазон времени", () => {
   const url = t.exploreUrl({ timeRange: { from: "now-6h", to: "now" } }, { uid: "prom", type: "prometheus" }, { expr: "up" });
   assert.ok(url.startsWith("/crf/dashboard/explore?schemaVersion=1&orgId=1&panes="));

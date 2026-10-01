@@ -11,14 +11,24 @@ const puppeteer = require('puppeteer');
     if (!request.url().includes('/api/plugin-proxy/tech-ai-assistant-app/')) return request.continue();
     proxyCalls += 1;
     const body = JSON.parse(request.postData() || '{}');
-    if (proxyCalls === 1) {
+    const native = Array.isArray(body.tools);
+    if (proxyCalls === 1 && native) {
       request.respond({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'call_test', type: 'function', function: { name: 'query_grafana_datasource', arguments: JSON.stringify({ datasourceUid: 'loki', reason: 'Проверить наличие логов', query: { expr: '{service_name="keycloak"}', refId: 'AI' } }) } }] } }] }),
       });
+    } else if (proxyCalls === 1) {
+      request.respond({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: '```grafana-query\n{"datasourceUid":"loki","reason":"Проверить наличие логов","query":{"expr":"{service_name=\\"keycloak\\"}","refId":"AI"}}\n```' } }] }),
+      });
     } else {
-      toolResultReturned = body.messages.some((message) => message.role === 'tool' && message.tool_call_id === 'call_test' && message.content.includes('datasource'));
+      toolResultReturned = body.messages.some((message) =>
+        (message.role === 'tool' && message.tool_call_id === 'call_test' && message.content.includes('datasource')) ||
+        (message.role === 'user' && message.content.includes('Результаты запросов grafana-query') && message.content.includes('datasource'))
+      );
       request.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'TOOL RESULT RECEIVED' } }] }) });
     }
   });
