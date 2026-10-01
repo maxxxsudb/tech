@@ -10,7 +10,7 @@
     "author": { "name": "Tech" },
     "keywords": ["ai", "assistant", "dashboard", "promql", "logql"],
     "logos": { "small": "logo.svg", "large": "logo.svg" },
-    "version": "0.4.0",
+    "version": "0.5.0",
     "updated": "2026-10-01"
   },
   "includes": [
@@ -81,6 +81,26 @@
       "reqRole": "Viewer",
       "url": "{{ .JsonData.apiUrl }}{{ .JsonData.apiPath }}",
       "headers": [{ "name": "Content-Type", "content": "application/json" }]
+    },
+    {
+      "path": "groq-models",
+      "method": "GET",
+      "reqRole": "Viewer",
+      "url": "https://api.groq.com/openai/v1/models",
+      "headers": [{ "name": "Authorization", "content": "Bearer {{ .SecureJsonData.groqApiKey }}" }]
+    },
+    {
+      "path": "models-auth",
+      "method": "GET",
+      "reqRole": "Viewer",
+      "url": "{{ .JsonData.apiUrl }}{{ .JsonData.modelsPath }}",
+      "headers": [{ "name": "Authorization", "content": "{{ .JsonData.authScheme }} {{ .SecureJsonData.apiKey }}" }]
+    },
+    {
+      "path": "models",
+      "method": "GET",
+      "reqRole": "Viewer",
+      "url": "{{ .JsonData.apiUrl }}{{ .JsonData.modelsPath }}"
     }
   ],
   "dependencies": {
