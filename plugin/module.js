@@ -25,7 +25,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     maxTokens: 0,
     contextTokens: 8192,
     contextDelivery: "auto",
-    streaming: true,
+    imageTransport: "openaiDataUri",
+    streaming: false,
     toolsMode: "text",
     investigationDatasourceTypes: "loki,prometheus,tempo",
     aiQueryMaxRangeHours: 24,
@@ -67,12 +68,12 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   }
 
   const styles = {
-    root: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, gap: 10 },
-    header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
-    history: { flex: 1, minHeight: 120, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: 8 },
-    user: { alignSelf: "flex-end", maxWidth: "90%", padding: "8px 12px", borderRadius: 6, background: "#1f60c4", color: "white", whiteSpace: "pre-wrap" },
-    assistant: { alignSelf: "stretch", padding: "8px 12px", borderRadius: 6, background: "rgba(128,128,128,.12)", overflowWrap: "anywhere" },
-    markdown: { lineHeight: 1.5 },
+    root: { display: "flex", flexDirection: "column", width: "100%", maxWidth: "100%", height: "100%", minWidth: 0, minHeight: 0, gap: 10, overflow: "hidden", boxSizing: "border-box" },
+    header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0, maxWidth: "100%" },
+    history: { flex: 1, minWidth: 0, minHeight: 120, maxWidth: "100%", overflowX: "hidden", overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: 8 },
+    user: { alignSelf: "flex-end", minWidth: 0, maxWidth: "90%", padding: "8px 12px", borderRadius: 6, background: "#1f60c4", color: "white", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" },
+    assistant: { alignSelf: "stretch", minWidth: 0, maxWidth: "100%", padding: "8px 12px", borderRadius: 6, background: "rgba(128,128,128,.12)", overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word", boxSizing: "border-box" },
+    markdown: { minWidth: 0, maxWidth: "100%", lineHeight: 1.5, overflowWrap: "anywhere", wordBreak: "break-word" },
     context: { color: "var(--text-secondary, #999)", fontSize: 12 },
     attachment: { color: "var(--text-secondary, #999)", fontSize: 12, marginTop: 4 },
     error: { padding: 10, border: "1px solid #e02f44", borderRadius: 4, color: "#e02f44", whiteSpace: "pre-wrap" },
@@ -85,9 +86,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     options: { display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 6 },
     proposal: { padding: 10, border: "1px solid #5794f2", borderRadius: 4, display: "grid", gap: 8 },
     step: { padding: "6px 8px", borderLeft: "3px solid #5794f2", fontSize: 12, display: "grid", gap: 4 },
-    codeBlock: { display: "grid", gap: 4, margin: "6px 0" },
-    diff: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
-    pre: { maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 11, padding: 8, margin: 0, background: "rgba(0,0,0,.25)" },
+    codeBlock: { display: "grid", minWidth: 0, maxWidth: "100%", gap: 4, margin: "6px 0" },
+    diff: { display: "grid", minWidth: 0, maxWidth: "100%", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 8 },
+    pre: { width: "100%", minWidth: 0, maxWidth: "100%", maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", fontSize: 11, padding: 8, margin: 0, background: "rgba(0,0,0,.25)", boxSizing: "border-box" },
     config: { display: "grid", gap: 16, maxWidth: 760, padding: 16 },
     field: { display: "grid", gap: 6 },
     input: { width: "100%", minHeight: 36, padding: "6px 8px" },
@@ -123,13 +124,26 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const apiError = data && data.error;
     const status = reason && (reason.status || reason.statusCode);
     const code = apiError && apiError.code;
-    const message =
+    let message =
       (apiError && apiError.message) ||
       (typeof apiError === "string" ? apiError : "") ||
       (data && data.message) ||
       (reason && reason.message) ||
       (typeof reason === "string" ? reason : "Неизвестная ошибка");
-    return [status ? `HTTP ${status}` : "", code || "", message].filter(Boolean).join(" · ");
+    if ((!message || message === "Неизвестная ошибка") && data && typeof data === "object") {
+      try {
+        message = JSON.stringify(sanitizeForAI(data)).slice(0, 2000);
+      } catch (_) {}
+    }
+    const type = apiError && apiError.type;
+    const param = apiError && apiError.param;
+    const details = apiError && apiError.details;
+    const proxyHint = [502, 504].includes(Number(status))
+      ? "Проверьте доступность API из pod Grafana и установите GF_DATAPROXY_TIMEOUT=300 для медленной модели"
+      : "";
+    return [status ? `HTTP ${status}` : "", code || type || "", param ? `param: ${param}` : "", message, details ? redactString(typeof details === "string" ? details : JSON.stringify(details)).slice(0, 1500) : "", proxyHint]
+      .filter(Boolean)
+      .join(" · ");
   }
 
   async function getSettings() {
@@ -887,17 +901,74 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
   // ---------- Снимок экрана ----------
 
-  function imageMessage(prompt, screenshot) {
-    if (!screenshot) return prompt;
-    return [
-      { type: "text", text: prompt },
-      { type: "image_url", image_url: { url: screenshot.dataUrl } },
-    ];
+  const imageTransportLabels = {
+    openaiDataUri: "OpenAI image_url object + data URI",
+    openaiDirectDataUri: "image_url string + data URI",
+    ollamaImages: "Ollama message.images[] raw base64",
+    anthropicBase64: "Anthropic image/source base64",
+    openaiFileData: "OpenAI file_data content part",
+  };
+
+  function rawBase64(dataUrl) {
+    const value = String(dataUrl || "");
+    const comma = value.indexOf(",");
+    return comma >= 0 ? value.slice(comma + 1) : value;
   }
 
-  function screenshotNote(screenshot) {
+  function imageUserMessage(prompt, screenshot, transport) {
+    if (!screenshot) return { role: "user", content: prompt };
+    const dataUrl = screenshot.dataUrl;
+    const base64 = rawBase64(dataUrl);
+    switch (transport || defaults.imageTransport) {
+      case "openaiDirectDataUri":
+        return { role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: dataUrl }] };
+      case "ollamaImages":
+        return { role: "user", content: prompt, images: [base64] };
+      case "anthropicBase64":
+        return { role: "user", content: [{ type: "text", text: prompt }, { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }] };
+      case "openaiFileData":
+        return { role: "user", content: [{ type: "text", text: prompt }, { type: "file", file: { filename: "vision-test.jpg", file_data: dataUrl } }] };
+      default:
+        return { role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl } }] };
+    }
+  }
+
+  function imageTestCases(dataUrl) {
+    const screenshot = { dataUrl };
+    return Object.keys(imageTransportLabels).map((id) => ({
+      id,
+      label: imageTransportLabels[id],
+      message: imageUserMessage("На изображении крупно написан код. Ответь только этим кодом.", screenshot, id),
+    }));
+  }
+
+  function createVisionTestImage() {
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 360;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#143d73";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#ffffff";
+    context.font = "bold 72px sans-serif";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText("VISION-742", canvas.width / 2, canvas.height / 2);
+    return canvas.toDataURL("image/jpeg", 0.85);
+  }
+
+  function screenshotNote(screenshot, transport) {
     if (!screenshot) return "";
-    return `\n\n📷 Передан снимок: ${screenshot.width}×${screenshot.height}, ${Math.ceil(screenshot.bytes / 1024)} КБ`;
+    return `\n\n📷 Передан снимок: JPEG ${screenshot.width}×${screenshot.height}, ${Math.ceil(screenshot.bytes / 1024)} КБ, ${imageTransportLabels[transport || defaults.imageTransport]}`;
+  }
+
+  function screenshotErrorNote(screenshot, reason, transport) {
+    if (!screenshot) return "";
+    const imageInfo = `JPEG ${screenshot.width}×${screenshot.height}, ${Math.ceil(screenshot.bytes / 1024)} КБ, ${imageTransportLabels[transport || defaults.imageTransport]}`;
+    const rejected = Number(reason && (reason.status || reason.statusCode)) === 400
+      ? "\nHTTP 400 вернул API-провайдер до генерации ответа моделью. Смотрите текст ошибки выше."
+      : "";
+    return `\nСнимок сформирован и отправлен: ${imageInfo}.${rejected}`;
   }
 
   function panelDataNote(context) {
@@ -911,7 +982,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     { label: "Объяснить", prompt: "Объясни назначение выбранной панели или дашборда, запросы и фактические результаты простым техническим языком." },
     { label: "Исправить запрос", prompt: "Найди ошибки в запросах выбранной панели. Предложи исправленный запрос и dashboard-json для безопасного применения." },
     { label: "Оптимизировать", prompt: "Проверь запросы выбранной панели на производительность и стоимость. Предложи оптимизированный вариант и dashboard-json." },
-    { label: "Расследовать", queries: true, prompt: "Проведи расследование по текущему диапазону времени. Сопоставь фактические результаты панелей, при необходимости выполни дополнительные read-only запросы, сформируй гипотезы, доказательства, исходные запросы и следующие проверки. Не выдавай гипотезы за факты." },
+    { label: "Расследовать", prompt: "Проведи расследование по текущему диапазону времени. Сопоставь фактические результаты панелей, сформируй гипотезы, доказательства, исходные запросы и следующие проверки. Если дополнительные запросы не разрешены, работай только с переданными результатами. Не выдавай гипотезы за факты." },
   ];
 
   async function captureDashboardScreenshot(extraHiddenElement) {
@@ -1377,7 +1448,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         const requestContext = await contextWithLiveData(settings, selectedContext, { signal: controller.signal });
         setInput("");
         const plan = planRequest(settings, requestContext, apiHistory(history), prompt);
-        userMessage = { role: "user", content: prompt, note: (screenshotNote(screenshot) + panelDataNote(requestContext)).trim() };
+        userMessage = { role: "user", content: prompt, note: (screenshotNote(screenshot, settings.imageTransport) + panelDataNote(requestContext)).trim() };
         setHistory((current) => current.concat([userMessage]));
         setPending(partial);
         setLastRequest({
@@ -1388,8 +1459,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           droppedMessages: plan.droppedMessages,
           delivery: resolveContextDelivery(settings),
           panels: availablePanels(selectedContext).map((panel) => ({ id: panel.id, title: panel.title })),
+          screenshot: screenshot ? { format: "JPEG", width: screenshot.width, height: screenshot.height, bytes: screenshot.bytes, transport: imageTransportLabels[settings.imageTransport || defaults.imageTransport] } : undefined,
         });
-        const messages = plan.messages.concat([{ role: "user", content: imageMessage(prompt, screenshot) }]);
+        const messages = plan.messages.concat([imageUserMessage(prompt, screenshot, settings.imageTransport)]);
         const result = await runAssistant(settings, requestContext, plan.contextJson, messages, {
           queries: Boolean((action && action.queries) || allowQueries),
           signal: controller.signal,
@@ -1403,7 +1475,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         if (reason && reason.name === "AbortError" && userMessage) {
           setHistory((current) => current.concat([{ role: "assistant", content: `${partial.content || ""}\n\n_(ответ остановлен)_`.trim(), reasoning: partial.reasoning, steps: partial.steps }]));
         } else {
-          const message = formatError(reason);
+          let message = formatError(reason);
+          message += screenshotErrorNote(screenshot, reason, settings.imageTransport);
           if (partial.content || partial.reasoning || (partial.steps || []).length) {
             setHistory((current) => current.concat([{
               role: "assistant",
@@ -1486,7 +1559,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         (lastRequest.reductions.length ? ` · сжато: ${lastRequest.reductions.join(", ")}` : "") +
         (lastRequest.droppedMessages ? ` · в модель не ушли ранние сообщения: ${lastRequest.droppedMessages}` : "") +
         ` · контекст: ${lastRequest.delivery === "inline" ? "в system prompt" : "grafana-context.json"}` +
-        ` · панели: ${lastRequest.panels.length}`
+        ` · панели: ${lastRequest.panels.length}` +
+        (lastRequest.screenshot ? ` · снимок: ${lastRequest.screenshot.format} ${lastRequest.screenshot.width}×${lastRequest.screenshot.height}, ${Math.ceil(lastRequest.screenshot.bytes / 1024)} КБ` : "")
       : "";
 
     return h("div", { style: styles.root, ref: rootRef },
@@ -1519,7 +1593,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         h("div", { style: styles.options },
           h("label", { style: styles.attachment },
             h("input", { type: "checkbox", checked: allowQueries, disabled: busy, onChange: (event) => setAllowQueries(event.target.checked) }),
-            " Разрешить AI выполнять запросы"
+            " Разрешить AI выполнять дополнительные запросы (расширенное расследование)"
           ),
           h("label", { style: styles.attachment },
             h("input", { type: "checkbox", checked: includeScreenshot, disabled: busy, onChange: (event) => setIncludeScreenshot(event.target.checked) }),
@@ -1584,6 +1658,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const [status, setStatus] = React.useState("");
     const [checkStatus, setCheckStatus] = React.useState("");
     const [models, setModels] = React.useState([]);
+    const [visionTesting, setVisionTesting] = React.useState(false);
+    const [visionResults, setVisionResults] = React.useState([]);
 
     React.useEffect(() => {
       getSettings()
@@ -1681,6 +1757,35 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       }
     }
 
+    async function testImageFormats(selectedOnly) {
+      setVisionTesting(true);
+      setVisionResults([]);
+      try {
+        const saved = (await getSettings()).jsonData;
+        const dataUrl = createVisionTestImage();
+        const cases = imageTestCases(dataUrl).filter((item) => !selectedOnly || item.id === (state.imageTransport || defaults.imageTransport));
+        for (const item of cases) {
+          try {
+            const result = await postChat(saved, {
+              model: modelName(saved),
+              stream: false,
+              max_tokens: 128,
+              messages: [item.message],
+            });
+            const split = splitThink(result.content);
+            const answer = split.content || result.reasoning || "(пустой ответ)";
+            setVisionResults((current) => current.concat([{ id: item.id, label: item.label, ok: true, answer: answer.slice(0, 500) }]));
+          } catch (reason) {
+            setVisionResults((current) => current.concat([{ id: item.id, label: item.label, ok: false, answer: formatError(reason) }]));
+          }
+        }
+      } catch (reason) {
+        setVisionResults([{ id: "setup", label: "Подготовка теста", ok: false, answer: formatError(reason) }]);
+      } finally {
+        setVisionTesting(false);
+      }
+    }
+
     async function loadModels() {
       setCheckStatus("Загрузка списка моделей…");
       try {
@@ -1754,6 +1859,29 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       field("Max output tokens (0 = provider default)", "maxTokens", "number"),
       field("Reasoning effort (optional)", "reasoningEffort"),
       checkbox("Потоковый вывод ответа (stream)", "streaming", true),
+      h("div", { style: Object.assign({}, styles.field, { padding: 10, border: "1px solid rgba(128,128,128,.35)", borderRadius: 4 }) },
+        h("strong", null, "Передача снимков"),
+        h("label", { style: styles.field },
+          h("span", null, "JSON-схема изображения"),
+          h("select", { style: styles.input, value: state.imageTransport || defaults.imageTransport, onChange: (event) => update({ imageTransport: event.target.value }) },
+            Object.keys(imageTransportLabels).map((id) => h("option", { key: id, value: id }, imageTransportLabels[id]))
+          )
+        ),
+        h("div", { style: styles.context }, "Тест создаёт JPEG 640×360 с кодом VISION-742 и отправляет его уже сохранённой модели. Проверка всех форматов выполнит пять коротких запросов."),
+        h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+          h("button", { type: "button", style: styles.button, disabled: visionTesting, onClick: () => testImageFormats(true) }, visionTesting ? "Проверка…" : "Проверить выбранный формат"),
+          h("button", { type: "button", style: styles.button, disabled: visionTesting, onClick: () => testImageFormats(false) }, visionTesting ? "Проверка…" : "Проверить все форматы")
+        ),
+        visionResults.length ? h("div", { style: { display: "grid", gap: 6 } }, visionResults.map((result) =>
+          h("div", { key: result.id, style: { padding: 8, borderLeft: `3px solid ${result.ok ? "#56a64b" : "#e02f44"}`, background: "rgba(128,128,128,.08)", whiteSpace: "pre-wrap" } },
+            h("strong", null, `${result.ok ? "✅" : "❌"} ${result.label}`),
+            h("div", null, result.answer),
+            result.ok && result.id !== "setup" && result.id !== (state.imageTransport || defaults.imageTransport)
+              ? h("button", { type: "button", style: Object.assign({}, styles.smallButton, { marginTop: 6 }), onClick: () => update({ imageTransport: result.id }) }, "Использовать этот формат")
+              : null
+          )
+        )) : null
+      ),
       h("label", { style: styles.field },
         h("span", null, "Как модель выполняет дополнительные запросы"),
         h("select", { style: styles.input, value: state.toolsMode || "text", onChange: (event) => update({ toolsMode: event.target.value }) },
@@ -1829,6 +1957,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     drawer.remove();
   }
 
+  const drawerScopedCss = [
+    "#tech-ai-assistant-drawer, #tech-ai-assistant-drawer * { box-sizing: border-box; min-width: 0; }",
+    "#tech-ai-assistant-drawer .markdown-html { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }",
+    "#tech-ai-assistant-drawer .markdown-html table { display: block; max-width: 100%; overflow-x: auto; }",
+    "#tech-ai-assistant-drawer .markdown-html img, #tech-ai-assistant-drawer .markdown-html svg { max-width: 100%; height: auto; }",
+    "#tech-ai-assistant-drawer pre, #tech-ai-assistant-drawer code { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }",
+  ].join("\n");
+
   function openDrawer() {
     if (!canMountReact()) {
       openAssistant();
@@ -1843,9 +1979,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       right: "0",
       zIndex: "2147483001",
       width: "min(560px, 100vw)",
+      maxWidth: "100vw",
       height: "100vh",
+      maxHeight: "100vh",
       display: "grid",
       gridTemplateRows: "48px minmax(0, 1fr)",
+      overflow: "hidden",
+      boxSizing: "border-box",
+      contain: "layout paint",
       background: colors.background,
       color: colors.text,
       borderLeft: `1px solid ${colors.border}`,
@@ -1860,6 +2001,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       padding: "0 12px 0 16px",
       fontWeight: "600",
       borderBottom: `1px solid ${colors.border}`,
+      minWidth: "0",
+      overflow: "hidden",
     });
     header.appendChild(document.createTextNode(COMPONENT_TITLE));
 
@@ -1867,14 +2010,18 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     close.type = "button";
     close.textContent = "×";
     close.title = "Закрыть (Esc)";
-    Object.assign(close.style, { border: "0", background: "transparent", color: "inherit", fontSize: "28px", lineHeight: "36px", cursor: "pointer" });
+    Object.assign(close.style, { flex: "0 0 auto", border: "0", background: "transparent", color: "inherit", fontSize: "28px", lineHeight: "36px", cursor: "pointer" });
     close.addEventListener("click", closeDrawer);
     header.appendChild(close);
 
     const content = document.createElement("div");
     content.id = "tech-ai-assistant-drawer-content";
-    Object.assign(content.style, { minHeight: "0", padding: "12px", display: "flex", flexDirection: "column" });
+    Object.assign(content.style, { width: "100%", minWidth: "0", maxWidth: "100%", minHeight: "0", padding: "12px", display: "flex", flexDirection: "column", overflow: "hidden" });
 
+    const scopedStyle = document.createElement("style");
+    scopedStyle.textContent = drawerScopedCss;
+
+    drawer.appendChild(scopedStyle);
     drawer.appendChild(header);
     drawer.appendChild(content);
     drawer.addEventListener("keydown", (event) => {
@@ -1976,6 +2123,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { joinEndpoint, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument },
+    __test: { joinEndpoint, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
   };
 });
