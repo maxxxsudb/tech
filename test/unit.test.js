@@ -229,6 +229,16 @@ test("расследование по умолчанию не форсирует
   assert.match(action.prompt, /Если дополнительные запросы не разрешены/);
 });
 
+test("vision-тест формирует пять JSON-схем из одного JPEG", () => {
+  const dataUrl = "data:image/jpeg;base64,QUJD";
+  const cases = t.imageTestCases(dataUrl);
+  assert.equal(cases.length, 5);
+  assert.deepEqual(cases.map((item) => item.id), Object.keys(t.imageTransportLabels));
+  assert.equal(cases.find((item) => item.id === "ollamaImages").message.images[0], "QUJD");
+  assert.equal(cases.find((item) => item.id === "openaiDataUri").message.content[1].image_url.url, dataUrl);
+  assert.equal(cases.find((item) => item.id === "anthropicBase64").message.content[1].source.data, "QUJD");
+});
+
 test("неподдерживаемый stream автоматически повторяется без streaming", () => {
   assert.equal(t.shouldRetryWithoutStream({ stream: true }, 400, {}), true);
   assert.equal(t.shouldRetryWithoutStream({ stream: true }, 422, {}), true);

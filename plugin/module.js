@@ -25,6 +25,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     maxTokens: 0,
     contextTokens: 8192,
     contextDelivery: "auto",
+    imageTransport: "openaiDataUri",
     streaming: false,
     toolsMode: "text",
     investigationDatasourceTypes: "loki,prometheus,tempo",
@@ -883,22 +884,70 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
   // ---------- Снимок экрана ----------
 
-  function imageMessage(prompt, screenshot) {
-    if (!screenshot) return prompt;
-    return [
-      { type: "text", text: prompt },
-      { type: "image_url", image_url: { url: screenshot.dataUrl } },
-    ];
+  const imageTransportLabels = {
+    openaiDataUri: "OpenAI image_url object + data URI",
+    openaiDirectDataUri: "image_url string + data URI",
+    ollamaImages: "Ollama message.images[] raw base64",
+    anthropicBase64: "Anthropic image/source base64",
+    openaiFileData: "OpenAI file_data content part",
+  };
+
+  function rawBase64(dataUrl) {
+    const value = String(dataUrl || "");
+    const comma = value.indexOf(",");
+    return comma >= 0 ? value.slice(comma + 1) : value;
   }
 
-  function screenshotNote(screenshot) {
-    if (!screenshot) return "";
-    return `\n\n📷 Передан снимок: JPEG ${screenshot.width}×${screenshot.height}, ${Math.ceil(screenshot.bytes / 1024)} КБ, OpenAI image_url data URI`;
+  function imageUserMessage(prompt, screenshot, transport) {
+    if (!screenshot) return { role: "user", content: prompt };
+    const dataUrl = screenshot.dataUrl;
+    const base64 = rawBase64(dataUrl);
+    switch (transport || defaults.imageTransport) {
+      case "openaiDirectDataUri":
+        return { role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: dataUrl }] };
+      case "ollamaImages":
+        return { role: "user", content: prompt, images: [base64] };
+      case "anthropicBase64":
+        return { role: "user", content: [{ type: "text", text: prompt }, { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } }] };
+      case "openaiFileData":
+        return { role: "user", content: [{ type: "text", text: prompt }, { type: "file", file: { filename: "vision-test.jpg", file_data: dataUrl } }] };
+      default:
+        return { role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl } }] };
+    }
   }
 
-  function screenshotErrorNote(screenshot, reason) {
+  function imageTestCases(dataUrl) {
+    const screenshot = { dataUrl };
+    return Object.keys(imageTransportLabels).map((id) => ({
+      id,
+      label: imageTransportLabels[id],
+      message: imageUserMessage("На изображении крупно написан код. Ответь только этим кодом.", screenshot, id),
+    }));
+  }
+
+  function createVisionTestImage() {
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 360;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#143d73";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#ffffff";
+    context.font = "bold 72px sans-serif";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText("VISION-742", canvas.width / 2, canvas.height / 2);
+    return canvas.toDataURL("image/jpeg", 0.85);
+  }
+
+  function screenshotNote(screenshot, transport) {
     if (!screenshot) return "";
-    const imageInfo = `JPEG ${screenshot.width}×${screenshot.height}, ${Math.ceil(screenshot.bytes / 1024)} КБ, OpenAI image_url data URI`;
+    return `\n\n📷 Передан снимок: JPEG ${screenshot.width}×${screenshot.height}, ${Math.ceil(screenshot.bytes / 1024)} КБ, ${imageTransportLabels[transport || defaults.imageTransport]}`;
+  }
+
+  function screenshotErrorNote(screenshot, reason, transport) {
+    if (!screenshot) return "";
+    const imageInfo = `JPEG ${screenshot.width}×${screenshot.height}, ${Math.ceil(screenshot.bytes / 1024)} КБ, ${imageTransportLabels[transport || defaults.imageTransport]}`;
     const rejected = Number(reason && (reason.status || reason.statusCode)) === 400
       ? "\nHTTP 400 вернул API-провайдер до генерации ответа моделью. Смотрите текст ошибки выше."
       : "";
@@ -1382,7 +1431,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         const requestContext = await contextWithLiveData(settings, selectedContext, { signal: controller.signal });
         setInput("");
         const plan = planRequest(settings, requestContext, apiHistory(history), prompt);
-        userMessage = { role: "user", content: prompt, note: (screenshotNote(screenshot) + panelDataNote(requestContext)).trim() };
+        userMessage = { role: "user", content: prompt, note: (screenshotNote(screenshot, settings.imageTransport) + panelDataNote(requestContext)).trim() };
         setHistory((current) => current.concat([userMessage]));
         setPending(partial);
         setLastRequest({
@@ -1393,9 +1442,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           droppedMessages: plan.droppedMessages,
           delivery: resolveContextDelivery(settings),
           panels: availablePanels(selectedContext).map((panel) => ({ id: panel.id, title: panel.title })),
-          screenshot: screenshot ? { format: "JPEG", width: screenshot.width, height: screenshot.height, bytes: screenshot.bytes, transport: "OpenAI image_url data URI" } : undefined,
+          screenshot: screenshot ? { format: "JPEG", width: screenshot.width, height: screenshot.height, bytes: screenshot.bytes, transport: imageTransportLabels[settings.imageTransport || defaults.imageTransport] } : undefined,
         });
-        const messages = plan.messages.concat([{ role: "user", content: imageMessage(prompt, screenshot) }]);
+        const messages = plan.messages.concat([imageUserMessage(prompt, screenshot, settings.imageTransport)]);
         const result = await runAssistant(settings, requestContext, plan.contextJson, messages, {
           queries: Boolean((action && action.queries) || allowQueries),
           signal: controller.signal,
@@ -1410,7 +1459,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           setHistory((current) => current.concat([{ role: "assistant", content: `${partial.content || ""}\n\n_(ответ остановлен)_`.trim(), reasoning: partial.reasoning, steps: partial.steps }]));
         } else {
           let message = formatError(reason);
-          message += screenshotErrorNote(screenshot, reason);
+          message += screenshotErrorNote(screenshot, reason, settings.imageTransport);
           if (partial.content || partial.reasoning || (partial.steps || []).length) {
             setHistory((current) => current.concat([{
               role: "assistant",
@@ -1592,6 +1641,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const [status, setStatus] = React.useState("");
     const [checkStatus, setCheckStatus] = React.useState("");
     const [models, setModels] = React.useState([]);
+    const [visionTesting, setVisionTesting] = React.useState(false);
+    const [visionResults, setVisionResults] = React.useState([]);
 
     React.useEffect(() => {
       getSettings()
@@ -1668,6 +1719,35 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       }
     }
 
+    async function testImageFormats(selectedOnly) {
+      setVisionTesting(true);
+      setVisionResults([]);
+      try {
+        const saved = (await getSettings()).jsonData;
+        const dataUrl = createVisionTestImage();
+        const cases = imageTestCases(dataUrl).filter((item) => !selectedOnly || item.id === (state.imageTransport || defaults.imageTransport));
+        for (const item of cases) {
+          try {
+            const result = await postChat(saved, {
+              model: modelName(saved),
+              stream: false,
+              max_tokens: 128,
+              messages: [item.message],
+            });
+            const split = splitThink(result.content);
+            const answer = split.content || result.reasoning || "(пустой ответ)";
+            setVisionResults((current) => current.concat([{ id: item.id, label: item.label, ok: true, answer: answer.slice(0, 500) }]));
+          } catch (reason) {
+            setVisionResults((current) => current.concat([{ id: item.id, label: item.label, ok: false, answer: formatError(reason) }]));
+          }
+        }
+      } catch (reason) {
+        setVisionResults([{ id: "setup", label: "Подготовка теста", ok: false, answer: formatError(reason) }]);
+      } finally {
+        setVisionTesting(false);
+      }
+    }
+
     async function loadModels() {
       setCheckStatus("Загрузка списка моделей…");
       try {
@@ -1740,6 +1820,29 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       field("Max output tokens (0 = provider default)", "maxTokens", "number"),
       field("Reasoning effort (optional)", "reasoningEffort"),
       checkbox("Потоковый вывод ответа (stream)", "streaming", true),
+      h("div", { style: Object.assign({}, styles.field, { padding: 10, border: "1px solid rgba(128,128,128,.35)", borderRadius: 4 }) },
+        h("strong", null, "Передача снимков"),
+        h("label", { style: styles.field },
+          h("span", null, "JSON-схема изображения"),
+          h("select", { style: styles.input, value: state.imageTransport || defaults.imageTransport, onChange: (event) => update({ imageTransport: event.target.value }) },
+            Object.keys(imageTransportLabels).map((id) => h("option", { key: id, value: id }, imageTransportLabels[id]))
+          )
+        ),
+        h("div", { style: styles.context }, "Тест создаёт JPEG 640×360 с кодом VISION-742 и отправляет его уже сохранённой модели. Проверка всех форматов выполнит пять коротких запросов."),
+        h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+          h("button", { type: "button", style: styles.button, disabled: visionTesting, onClick: () => testImageFormats(true) }, visionTesting ? "Проверка…" : "Проверить выбранный формат"),
+          h("button", { type: "button", style: styles.button, disabled: visionTesting, onClick: () => testImageFormats(false) }, visionTesting ? "Проверка…" : "Проверить все форматы")
+        ),
+        visionResults.length ? h("div", { style: { display: "grid", gap: 6 } }, visionResults.map((result) =>
+          h("div", { key: result.id, style: { padding: 8, borderLeft: `3px solid ${result.ok ? "#56a64b" : "#e02f44"}`, background: "rgba(128,128,128,.08)", whiteSpace: "pre-wrap" } },
+            h("strong", null, `${result.ok ? "✅" : "❌"} ${result.label}`),
+            h("div", null, result.answer),
+            result.ok && result.id !== "setup" && result.id !== (state.imageTransport || defaults.imageTransport)
+              ? h("button", { type: "button", style: Object.assign({}, styles.smallButton, { marginTop: 6 }), onClick: () => update({ imageTransport: result.id }) }, "Использовать этот формат")
+              : null
+          )
+        )) : null
+      ),
       h("label", { style: styles.field },
         h("span", null, "Как модель выполняет дополнительные запросы"),
         h("select", { style: styles.input, value: state.toolsMode || "text", onChange: (event) => update({ toolsMode: event.target.value }) },
@@ -1962,6 +2065,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts },
+    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels },
   };
 });
