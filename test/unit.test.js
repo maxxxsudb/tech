@@ -239,6 +239,15 @@ test("vision-тест формирует пять JSON-схем из одног�
   assert.equal(cases.find((item) => item.id === "anthropicBase64").message.content[1].source.data, "QUJD");
 });
 
+test("drawer ограничивает длинный ответ шириной viewport", () => {
+  assert.equal(t.styles.root.minWidth, 0);
+  assert.equal(t.styles.history.overflowX, "hidden");
+  assert.equal(t.styles.assistant.maxWidth, "100%");
+  assert.equal(t.styles.pre.maxWidth, "100%");
+  assert.match(t.drawerScopedCss, /markdown-html table/);
+  assert.match(t.drawerScopedCss, /overflow-x: auto/);
+});
+
 test("неподдерживаемый stream автоматически повторяется без streaming", () => {
   assert.equal(t.shouldRetryWithoutStream({ stream: true }, 400, {}), true);
   assert.equal(t.shouldRetryWithoutStream({ stream: true }, 422, {}), true);

@@ -68,12 +68,12 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   }
 
   const styles = {
-    root: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, gap: 10 },
-    header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
-    history: { flex: 1, minHeight: 120, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: 8 },
-    user: { alignSelf: "flex-end", maxWidth: "90%", padding: "8px 12px", borderRadius: 6, background: "#1f60c4", color: "white", whiteSpace: "pre-wrap" },
-    assistant: { alignSelf: "stretch", padding: "8px 12px", borderRadius: 6, background: "rgba(128,128,128,.12)", overflowWrap: "anywhere" },
-    markdown: { lineHeight: 1.5 },
+    root: { display: "flex", flexDirection: "column", width: "100%", maxWidth: "100%", height: "100%", minWidth: 0, minHeight: 0, gap: 10, overflow: "hidden", boxSizing: "border-box" },
+    header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0, maxWidth: "100%" },
+    history: { flex: 1, minWidth: 0, minHeight: 120, maxWidth: "100%", overflowX: "hidden", overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: 8 },
+    user: { alignSelf: "flex-end", minWidth: 0, maxWidth: "90%", padding: "8px 12px", borderRadius: 6, background: "#1f60c4", color: "white", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" },
+    assistant: { alignSelf: "stretch", minWidth: 0, maxWidth: "100%", padding: "8px 12px", borderRadius: 6, background: "rgba(128,128,128,.12)", overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word", boxSizing: "border-box" },
+    markdown: { minWidth: 0, maxWidth: "100%", lineHeight: 1.5, overflowWrap: "anywhere", wordBreak: "break-word" },
     context: { color: "var(--text-secondary, #999)", fontSize: 12 },
     attachment: { color: "var(--text-secondary, #999)", fontSize: 12, marginTop: 4 },
     error: { padding: 10, border: "1px solid #e02f44", borderRadius: 4, color: "#e02f44", whiteSpace: "pre-wrap" },
@@ -86,9 +86,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     options: { display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 6 },
     proposal: { padding: 10, border: "1px solid #5794f2", borderRadius: 4, display: "grid", gap: 8 },
     step: { padding: "6px 8px", borderLeft: "3px solid #5794f2", fontSize: 12, display: "grid", gap: 4 },
-    codeBlock: { display: "grid", gap: 4, margin: "6px 0" },
-    diff: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
-    pre: { maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 11, padding: 8, margin: 0, background: "rgba(0,0,0,.25)" },
+    codeBlock: { display: "grid", minWidth: 0, maxWidth: "100%", gap: 4, margin: "6px 0" },
+    diff: { display: "grid", minWidth: 0, maxWidth: "100%", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 8 },
+    pre: { width: "100%", minWidth: 0, maxWidth: "100%", maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", fontSize: 11, padding: 8, margin: 0, background: "rgba(0,0,0,.25)", boxSizing: "border-box" },
     config: { display: "grid", gap: 16, maxWidth: 760, padding: 16 },
     field: { display: "grid", gap: 6 },
     input: { width: "100%", minHeight: 36, padding: "6px 8px" },
@@ -1918,6 +1918,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     drawer.remove();
   }
 
+  const drawerScopedCss = [
+    "#tech-ai-assistant-drawer, #tech-ai-assistant-drawer * { box-sizing: border-box; min-width: 0; }",
+    "#tech-ai-assistant-drawer .markdown-html { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }",
+    "#tech-ai-assistant-drawer .markdown-html table { display: block; max-width: 100%; overflow-x: auto; }",
+    "#tech-ai-assistant-drawer .markdown-html img, #tech-ai-assistant-drawer .markdown-html svg { max-width: 100%; height: auto; }",
+    "#tech-ai-assistant-drawer pre, #tech-ai-assistant-drawer code { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }",
+  ].join("\n");
+
   function openDrawer() {
     if (!canMountReact()) {
       openAssistant();
@@ -1932,9 +1940,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       right: "0",
       zIndex: "2147483001",
       width: "min(560px, 100vw)",
+      maxWidth: "100vw",
       height: "100vh",
+      maxHeight: "100vh",
       display: "grid",
       gridTemplateRows: "48px minmax(0, 1fr)",
+      overflow: "hidden",
+      boxSizing: "border-box",
+      contain: "layout paint",
       background: colors.background,
       color: colors.text,
       borderLeft: `1px solid ${colors.border}`,
@@ -1949,6 +1962,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       padding: "0 12px 0 16px",
       fontWeight: "600",
       borderBottom: `1px solid ${colors.border}`,
+      minWidth: "0",
+      overflow: "hidden",
     });
     header.appendChild(document.createTextNode(COMPONENT_TITLE));
 
@@ -1956,14 +1971,18 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     close.type = "button";
     close.textContent = "×";
     close.title = "Закрыть (Esc)";
-    Object.assign(close.style, { border: "0", background: "transparent", color: "inherit", fontSize: "28px", lineHeight: "36px", cursor: "pointer" });
+    Object.assign(close.style, { flex: "0 0 auto", border: "0", background: "transparent", color: "inherit", fontSize: "28px", lineHeight: "36px", cursor: "pointer" });
     close.addEventListener("click", closeDrawer);
     header.appendChild(close);
 
     const content = document.createElement("div");
     content.id = "tech-ai-assistant-drawer-content";
-    Object.assign(content.style, { minHeight: "0", padding: "12px", display: "flex", flexDirection: "column" });
+    Object.assign(content.style, { width: "100%", minWidth: "0", maxWidth: "100%", minHeight: "0", padding: "12px", display: "flex", flexDirection: "column", overflow: "hidden" });
 
+    const scopedStyle = document.createElement("style");
+    scopedStyle.textContent = drawerScopedCss;
+
+    drawer.appendChild(scopedStyle);
     drawer.appendChild(header);
     drawer.appendChild(content);
     drawer.addEventListener("keydown", (event) => {
@@ -2065,6 +2084,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels },
+    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
   };
 });
