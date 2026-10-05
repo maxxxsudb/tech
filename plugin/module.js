@@ -25,7 +25,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     maxTokens: 0,
     contextTokens: 8192,
     contextDelivery: "auto",
-    streaming: true,
+    streaming: false,
     toolsMode: "text",
     investigationDatasourceTypes: "loki,prometheus,tempo",
     aiQueryMaxRangeHours: 24,
@@ -106,13 +106,26 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const apiError = data && data.error;
     const status = reason && (reason.status || reason.statusCode);
     const code = apiError && apiError.code;
-    const message =
+    let message =
       (apiError && apiError.message) ||
       (typeof apiError === "string" ? apiError : "") ||
       (data && data.message) ||
       (reason && reason.message) ||
       (typeof reason === "string" ? reason : "Неизвестная ошибка");
-    return [status ? `HTTP ${status}` : "", code || "", message].filter(Boolean).join(" · ");
+    if ((!message || message === "Неизвестная ошибка") && data && typeof data === "object") {
+      try {
+        message = JSON.stringify(sanitizeForAI(data)).slice(0, 2000);
+      } catch (_) {}
+    }
+    const type = apiError && apiError.type;
+    const param = apiError && apiError.param;
+    const details = apiError && apiError.details;
+    const proxyHint = [502, 504].includes(Number(status))
+      ? "Проверьте доступность API из pod Grafana и установите GF_DATAPROXY_TIMEOUT=300 для медленной модели"
+      : "";
+    return [status ? `HTTP ${status}` : "", code || type || "", param ? `param: ${param}` : "", message, details ? redactString(typeof details === "string" ? details : JSON.stringify(details)).slice(0, 1500) : "", proxyHint]
+      .filter(Boolean)
+      .join(" · ");
   }
 
   async function getSettings() {
@@ -880,7 +893,16 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
   function screenshotNote(screenshot) {
     if (!screenshot) return "";
-    return `\n\n📷 Передан снимок: ${screenshot.width}×${screenshot.height}, ${Math.ceil(screenshot.bytes / 1024)} КБ`;
+    return `\n\n📷 Передан снимок: JPEG ${screenshot.width}×${screenshot.height}, ${Math.ceil(screenshot.bytes / 1024)} КБ, OpenAI image_url data URI`;
+  }
+
+  function screenshotErrorNote(screenshot, reason) {
+    if (!screenshot) return "";
+    const imageInfo = `JPEG ${screenshot.width}×${screenshot.height}, ${Math.ceil(screenshot.bytes / 1024)} КБ, OpenAI image_url data URI`;
+    const rejected = Number(reason && (reason.status || reason.statusCode)) === 400
+      ? "\nHTTP 400 вернул API-провайдер до генерации ответа моделью. Смотрите текст ошибки выше."
+      : "";
+    return `\nСнимок сформирован и отправлен: ${imageInfo}.${rejected}`;
   }
 
   function panelDataNote(context) {
@@ -894,7 +916,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     { label: "Объяснить", prompt: "Объясни назначение выбранной панели или дашборда, запросы и фактические результаты простым техническим языком." },
     { label: "Исправить запрос", prompt: "Найди ошибки в запросах выбранной панели. Предложи исправленный запрос и dashboard-json для безопасного применения." },
     { label: "Оптимизировать", prompt: "Проверь запросы выбранной панели на производительность и стоимость. Предложи оптимизированный вариант и dashboard-json." },
-    { label: "Расследовать", queries: true, prompt: "Проведи расследование по текущему диапазону времени. Сопоставь фактические результаты панелей, при необходимости выполни дополнительные read-only запросы, сформируй гипотезы, доказательства, исходные запросы и следующие проверки. Не выдавай гипотезы за факты." },
+    { label: "Расследовать", prompt: "Проведи расследование по текущему диапазону времени. Сопоставь фактические результаты панелей, сформируй гипотезы, доказательства, исходные запросы и следующие проверки. Если дополнительные запросы не разрешены, работай только с переданными результатами. Не выдавай гипотезы за факты." },
   ];
 
   async function captureDashboardScreenshot(extraHiddenElement) {
@@ -1371,6 +1393,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           droppedMessages: plan.droppedMessages,
           delivery: resolveContextDelivery(settings),
           panels: availablePanels(selectedContext).map((panel) => ({ id: panel.id, title: panel.title })),
+          screenshot: screenshot ? { format: "JPEG", width: screenshot.width, height: screenshot.height, bytes: screenshot.bytes, transport: "OpenAI image_url data URI" } : undefined,
         });
         const messages = plan.messages.concat([{ role: "user", content: imageMessage(prompt, screenshot) }]);
         const result = await runAssistant(settings, requestContext, plan.contextJson, messages, {
@@ -1386,7 +1409,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         if (reason && reason.name === "AbortError" && userMessage) {
           setHistory((current) => current.concat([{ role: "assistant", content: `${partial.content || ""}\n\n_(ответ остановлен)_`.trim(), reasoning: partial.reasoning, steps: partial.steps }]));
         } else {
-          const message = formatError(reason);
+          let message = formatError(reason);
+          message += screenshotErrorNote(screenshot, reason);
           if (partial.content || partial.reasoning || (partial.steps || []).length) {
             setHistory((current) => current.concat([{
               role: "assistant",
@@ -1469,7 +1493,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         (lastRequest.reductions.length ? ` · сжато: ${lastRequest.reductions.join(", ")}` : "") +
         (lastRequest.droppedMessages ? ` · в модель не ушли ранние сообщения: ${lastRequest.droppedMessages}` : "") +
         ` · контекст: ${lastRequest.delivery === "inline" ? "в system prompt" : "grafana-context.json"}` +
-        ` · панели: ${lastRequest.panels.length}`
+        ` · панели: ${lastRequest.panels.length}` +
+        (lastRequest.screenshot ? ` · снимок: ${lastRequest.screenshot.format} ${lastRequest.screenshot.width}×${lastRequest.screenshot.height}, ${Math.ceil(lastRequest.screenshot.bytes / 1024)} КБ` : "")
       : "";
 
     return h("div", { style: styles.root, ref: rootRef },
@@ -1502,7 +1527,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         h("div", { style: styles.options },
           h("label", { style: styles.attachment },
             h("input", { type: "checkbox", checked: allowQueries, disabled: busy, onChange: (event) => setAllowQueries(event.target.checked) }),
-            " Разрешить AI выполнять запросы"
+            " Разрешить AI выполнять дополнительные запросы (расширенное расследование)"
           ),
           h("label", { style: styles.attachment },
             h("input", { type: "checkbox", checked: includeScreenshot, disabled: busy, onChange: (event) => setIncludeScreenshot(event.target.checked) }),
@@ -1937,6 +1962,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument },
+    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts },
   };
 });

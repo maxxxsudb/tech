@@ -206,6 +206,29 @@ test("пустой API key не добавляет auth-маршрут для cu
   assert.equal(t.proxyRoute({ provider: "custom", useAuth: true, _hasApiKey: true }), "chat-auth");
 });
 
+test("безопасный профиль по умолчанию выключает streaming", () => {
+  assert.equal(t.defaults.streaming, false);
+  const body = t.requestBody(t.defaults, "{}", [{ role: "user", content: "test" }], {});
+  assert.equal(body.stream, false);
+});
+
+test("ошибка прокси сохраняет детали API и даёт подсказку для 502", () => {
+  assert.match(t.formatError({ status: 400, data: { error: { type: "invalid_request_error", param: "messages[1].content", message: "image_url is not supported" } } }), /image_url is not supported/);
+  assert.match(t.formatError({ status: 502, data: { message: "Bad Gateway" } }), /GF_DATAPROXY_TIMEOUT=300/);
+});
+
+test("ошибка снимка показывает параметры отправленного JPEG без скрытого fallback", () => {
+  const note = t.screenshotErrorNote({ width: 1200, height: 700, bytes: 102401 }, { status: 400 });
+  assert.match(note, /JPEG 1200×700, 101 КБ/);
+  assert.match(note, /до генерации ответа моделью/);
+});
+
+test("расследование по умолчанию не форсирует дополнительные datasource-запросы", () => {
+  const action = t.quickPrompts.find((item) => item.label === "Расследовать");
+  assert.equal(action.queries, undefined);
+  assert.match(action.prompt, /Если дополнительные запросы не разрешены/);
+});
+
 test("неподдерживаемый stream автоматически повторяется без streaming", () => {
   assert.equal(t.shouldRetryWithoutStream({ stream: true }, 400, {}), true);
   assert.equal(t.shouldRetryWithoutStream({ stream: true }, 422, {}), true);
