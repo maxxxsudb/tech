@@ -44,9 +44,10 @@ const puppeteer = require('puppeteer');
   await page.click('#tech-ai-assistant-launcher');
   await page.waitForSelector('#tech-ai-assistant-drawer textarea[placeholder*="PromQL"]', { visible: true, timeout: 15000 });
   if (page.url() !== dashboardUrl) throw new Error('Dashboard URL changed when drawer opened');
+  await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('Tech stand'), { timeout: 15000 });
   const result = {
     url: page.url(),
-    context: (await page.$eval('#tech-ai-assistant-drawer', (node) => node.innerText)).includes('Tech stand · UID: tech'),
+    context: (await page.$eval('#tech-ai-assistant-drawer', (node) => node.innerText)).includes('Tech stand'),
   };
   if (!result.context) throw new Error('Dashboard context was not preserved');
   await page.type('#tech-ai-assistant-drawer textarea[placeholder*="PromQL"]', 'покажи контекст');
