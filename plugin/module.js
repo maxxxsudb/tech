@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.7.4";
+  const PLUGIN_VERSION = "0.7.5";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -135,7 +135,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   const styles = {
     root: { display: "flex", flexDirection: "column", width: "100%", maxWidth: "100%", height: "100%", minWidth: 0, minHeight: 0, gap: 8, overflow: "hidden", boxSizing: "border-box" },
     header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0, maxWidth: "100%" },
-    history: { flex: "1 1 260px", minWidth: 0, minHeight: 180, maxWidth: "100%", overflowX: "hidden", overflowY: "auto", overscrollBehavior: "contain", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: 10, padding: "6px 4px 10px" },
+    history: { flex: "1 1 0", minWidth: 0, minHeight: 180, maxWidth: "100%", overflowX: "hidden", overflowY: "auto", overscrollBehavior: "contain", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: 10, padding: "6px 4px 10px" },
     user: { alignSelf: "flex-end", minWidth: 0, maxWidth: "88%", padding: "8px 12px", borderRadius: "10px 10px 2px 10px", background: "#1f60c4", color: "white", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", boxShadow: "0 1px 2px rgba(0,0,0,.18)" },
     assistant: { alignSelf: "stretch", minWidth: 0, maxWidth: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(128,128,128,.22)", background: "rgba(128,128,128,.09)", overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word", boxSizing: "border-box" },
     markdown: { minWidth: 0, maxWidth: "100%", lineHeight: 1.5, overflowWrap: "anywhere", wordBreak: "break-word" },
@@ -149,6 +149,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     stopButton: { minHeight: 32, padding: "0 12px", cursor: "pointer", borderRadius: 4, border: "1px solid #e02f44", background: "transparent", color: "#e02f44" },
     quickActions: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 },
     actionBar: { display: "flex", flexWrap: "nowrap", gap: 6, marginBottom: 8, overflowX: "auto", overscrollBehavior: "contain", padding: "0 0 4px" },
+    // Предпросмотр, расследование и ошибки прокручиваются отдельно и не выталкивают поле ввода за край drawer.
+    notices: { flex: "0 1 auto", minHeight: 0, maxHeight: "60%", overflowY: "auto", overscrollBehavior: "contain", display: "flex", flexDirection: "column", gap: 8 },
     controls: { flex: "0 0 auto", minHeight: 0, maxHeight: "48vh", display: "flex", flexDirection: "column", overflow: "hidden", padding: 8, border: "1px solid rgba(128,128,128,.22)", borderRadius: 8, background: "rgba(128,128,128,.055)", boxShadow: "0 -2px 10px rgba(0,0,0,.08)" },
     contextControls: { flex: "0 1 auto", minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", scrollbarGutter: "stable", padding: "2px 2px 0", margin: 0 },
     options: { display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 6 },
@@ -2172,6 +2174,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           : "Загрузка контекста…"),
         h("button", { type: "button", style: styles.smallButton, disabled: !history.length && !busy, onClick: newDialog }, "Новый диалог")
       ),
+      lastRequest || error || sendPreview || dataProgress || (investigationSetup && investigationStats) ? h("div", { style: styles.notices, "data-testid": "tech-ai-notices" },
       lastRequest ? h("details", { style: styles.context },
         h("summary", { style: { cursor: "pointer" } }, `Последний отправленный контекст · ${lastRequest.panels.map((panel) => panel.title || `#${panel.id}`).join(", ") || "без панелей"}`),
         h("pre", { style: styles.pre }, (() => {
@@ -2229,6 +2232,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           h("button", { type: "button", style: styles.button, disabled: busy, onClick: startInvestigation }, "Начать расследование"),
           h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: () => setInvestigationSetup(undefined) }, "Отмена")
         )
+      ) : null
       ) : null,
       h("div", { style: styles.history, ref: historyRef, "data-testid": "tech-ai-history" },
         history.length === 0 && !pending ? h("div", { style: styles.context }, "Задайте вопрос по текущему дашборду или панели.") : null,
