@@ -262,6 +262,9 @@ test("vision-тест формирует пять JSON-схем из одног�
 test("drawer ограничивает длинный ответ шириной viewport", () => {
   assert.equal(t.styles.root.minWidth, 0);
   assert.equal(t.styles.history.overflowX, "hidden");
+  assert.equal(t.styles.history.overflowY, "auto");
+  assert.equal(t.styles.controls.overflow, "hidden");
+  assert.equal(t.styles.contextControls.overflowY, "auto");
   assert.equal(t.styles.assistant.maxWidth, "100%");
   assert.equal(t.styles.pre.maxWidth, "100%");
   assert.match(t.drawerScopedCss, /markdown-html table/);

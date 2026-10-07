@@ -15,7 +15,7 @@ const puppeteer = require('puppeteer');
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          choices: [{ message: { content: 'Исправленный запрос:\n```logql\n{service_name="keycloak"} |= "error"\n```\n```dashboard-json\n{"panelId":2,"targets":[{"datasource":{"type":"loki","uid":"loki"},"expr":"{service_name=\\"keycloak\\"} |= \\"error\\"","refId":"A"}]}\n```' } }],
+          choices: [{ message: { content: 'Исправленный запрос:\n' + Array.from({ length: 45 }, (_, index) => `Строка подробного ответа ${index + 1}`).join('\n') + '\n```logql\n{service_name="keycloak"} |= "error"\n```\n```dashboard-json\n{"panelId":2,"targets":[{"datasource":{"type":"loki","uid":"loki"},"expr":"{service_name=\\"keycloak\\"} |= \\"error\\"","refId":"A"}]}\n```' } }],
         }),
       });
     } else {
@@ -35,6 +35,9 @@ const puppeteer = require('puppeteer');
   await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true, timeout: 30000 });
   await page.click('#tech-ai-assistant-launcher');
   await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
+  const controlsCollapsed = await page.$eval('[data-testid="tech-ai-context-controls"]', (node) => !node.open);
+  if (!controlsCollapsed) throw new Error('Actions/context section must be collapsed by default');
+  await page.$eval('[data-testid="tech-ai-context-controls"]', (node) => { node.open = true; });
   await page.evaluate(() => {
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
     [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Объяснить').click();
@@ -43,7 +46,8 @@ const puppeteer = require('puppeteer');
   await page.click('[data-testid="tech-ai-send-preview"] button');
   await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('Применить к дашборду'), { timeout: 60000 });
   await page.evaluate(() => {
-    const details = document.querySelector('#tech-ai-assistant-drawer details');
+    document.querySelector('[data-testid="tech-ai-context-controls"]').open = false;
+    const details = [...document.querySelectorAll('#tech-ai-assistant-drawer details')].find((item) => item.querySelector('summary')?.textContent.includes('Последний отправленный контекст'));
     details.open = true;
   });
   const drawerLayout = await page.evaluate(() => {
@@ -54,6 +58,14 @@ const puppeteer = require('puppeteer');
   if (drawerLayout.drawerLeft < 0 || drawerLayout.drawerRight > drawerLayout.viewport || drawerLayout.drawerWidth > drawerLayout.viewport || drawerLayout.closeLeft < 0 || drawerLayout.closeRight > drawerLayout.viewport) {
     throw new Error(`Drawer escaped viewport: ${JSON.stringify(drawerLayout)}`);
   }
+  const scrolling = await page.$eval('[data-testid="tech-ai-history"]', (node) => {
+    const before = node.scrollTop;
+    node.scrollTop = 0;
+    const canScroll = node.scrollHeight > node.clientHeight;
+    node.scrollTop = node.scrollHeight;
+    return { canScroll, moved: node.scrollTop > before, overflowY: getComputedStyle(node).overflowY };
+  });
+  if (!scrolling.canScroll || !scrolling.moved || scrolling.overflowY !== 'auto') throw new Error(`Answer history is not scrollable: ${JSON.stringify(scrolling)}`);
   const text = await page.$eval('#tech-ai-assistant-drawer', (node) => node.innerText);
   await page.screenshot({ path: '/test/features-success.png', fullPage: false });
   if (!/Данные панелей: \d+ из 3/.test(text)) throw new Error('Live panel data note is missing');

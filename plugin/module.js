@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.7.3";
+  const PLUGIN_VERSION = "0.7.4";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -133,21 +133,24 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   }
 
   const styles = {
-    root: { display: "flex", flexDirection: "column", width: "100%", maxWidth: "100%", height: "100%", minWidth: 0, minHeight: 0, gap: 10, overflow: "hidden", boxSizing: "border-box" },
+    root: { display: "flex", flexDirection: "column", width: "100%", maxWidth: "100%", height: "100%", minWidth: 0, minHeight: 0, gap: 8, overflow: "hidden", boxSizing: "border-box" },
     header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0, maxWidth: "100%" },
-    history: { flex: 1, minWidth: 0, minHeight: 120, maxWidth: "100%", overflowX: "hidden", overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: 8 },
-    user: { alignSelf: "flex-end", minWidth: 0, maxWidth: "90%", padding: "8px 12px", borderRadius: 6, background: "#1f60c4", color: "white", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" },
-    assistant: { alignSelf: "stretch", minWidth: 0, maxWidth: "100%", padding: "8px 12px", borderRadius: 6, background: "rgba(128,128,128,.12)", overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word", boxSizing: "border-box" },
+    history: { flex: "1 1 260px", minWidth: 0, minHeight: 180, maxWidth: "100%", overflowX: "hidden", overflowY: "auto", overscrollBehavior: "contain", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: 10, padding: "6px 4px 10px" },
+    user: { alignSelf: "flex-end", minWidth: 0, maxWidth: "88%", padding: "8px 12px", borderRadius: "10px 10px 2px 10px", background: "#1f60c4", color: "white", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", boxShadow: "0 1px 2px rgba(0,0,0,.18)" },
+    assistant: { alignSelf: "stretch", minWidth: 0, maxWidth: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(128,128,128,.22)", background: "rgba(128,128,128,.09)", overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word", boxSizing: "border-box" },
     markdown: { minWidth: 0, maxWidth: "100%", lineHeight: 1.5, overflowWrap: "anywhere", wordBreak: "break-word" },
     context: { color: "var(--text-secondary, #999)", fontSize: 12 },
     attachment: { color: "var(--text-secondary, #999)", fontSize: 12, marginTop: 4 },
     error: { padding: 10, border: "1px solid #e02f44", borderRadius: 4, color: "#e02f44", whiteSpace: "pre-wrap" },
-    composer: { display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "end" },
-    textarea: { width: "100%", minHeight: 72, resize: "vertical", padding: 8, color: "inherit", background: "transparent", border: "1px solid rgba(128,128,128,.45)", borderRadius: 4 },
+    composer: { flex: "0 0 auto", display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "end", paddingTop: 8 },
+    textarea: { width: "100%", minHeight: 58, maxHeight: 160, resize: "vertical", padding: "9px 10px", color: "inherit", background: "rgba(128,128,128,.05)", border: "1px solid rgba(128,128,128,.4)", borderRadius: 6 },
     button: { minHeight: 32, padding: "0 12px", cursor: "pointer", borderRadius: 4, border: "1px solid rgba(128,128,128,.45)", background: "rgba(128,128,128,.16)", color: "inherit" },
     smallButton: { minHeight: 24, padding: "0 8px", cursor: "pointer", borderRadius: 4, border: "1px solid rgba(128,128,128,.45)", background: "rgba(128,128,128,.16)", color: "inherit", fontSize: 12 },
     stopButton: { minHeight: 32, padding: "0 12px", cursor: "pointer", borderRadius: 4, border: "1px solid #e02f44", background: "transparent", color: "#e02f44" },
     quickActions: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 },
+    actionBar: { display: "flex", flexWrap: "nowrap", gap: 6, marginBottom: 8, overflowX: "auto", overscrollBehavior: "contain", padding: "0 0 4px" },
+    controls: { flex: "0 0 auto", minHeight: 0, maxHeight: "48vh", display: "flex", flexDirection: "column", overflow: "hidden", padding: 8, border: "1px solid rgba(128,128,128,.22)", borderRadius: 8, background: "rgba(128,128,128,.055)", boxShadow: "0 -2px 10px rgba(0,0,0,.08)" },
+    contextControls: { flex: "0 1 auto", minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", scrollbarGutter: "stable", padding: "2px 2px 0", margin: 0 },
     options: { display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 6 },
     proposal: { padding: 10, border: "1px solid #5794f2", borderRadius: 4, display: "grid", gap: 8 },
     step: { padding: "6px 8px", borderLeft: "3px solid #5794f2", fontSize: 12, display: "grid", gap: 4 },
@@ -2227,14 +2230,20 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: () => setInvestigationSetup(undefined) }, "Отмена")
         )
       ) : null,
-      h("div", { style: styles.history, ref: historyRef },
+      h("div", { style: styles.history, ref: historyRef, "data-testid": "tech-ai-history" },
         history.length === 0 && !pending ? h("div", { style: styles.context }, "Задайте вопрос по текущему дашборду или панели.") : null,
         history.map((message, index) => messageView(message, index, false)),
         pending ? messageView(Object.assign({ role: "assistant" }, pending), "pending", true) : null
       ),
-      h("div", null,
-        h("div", { style: styles.quickActions }, quickPrompts.map((action) =>
-          h("button", { key: action.label, type: "button", style: styles.button, disabled: busy || !ready, onClick: () => action.investigation ? openInvestigation(action) : prepareSend(action.prompt, action) }, action.label)
+      h("div", { style: styles.controls },
+        h("details", { style: styles.contextControls, "data-testid": "tech-ai-context-controls" },
+          h("summary", { style: { cursor: "pointer", fontWeight: 600 } },
+            `Действия и контекст · панели ${selectedPanelIds.length}/${panels.length}` +
+            (snapshotInfo ? ` · данные ${snapshotInfo.stats.loaded}/${snapshotInfo.stats.total}` : "")
+          ),
+          h("div", { style: { paddingTop: 6 } },
+        h("div", { style: styles.actionBar }, quickPrompts.map((action) =>
+          h("button", { key: action.label, type: "button", style: Object.assign({}, styles.button, { flex: "0 0 auto" }), disabled: busy || !ready, onClick: () => action.investigation ? openInvestigation(action) : prepareSend(action.prompt, action) }, action.label)
         )),
         h("div", { style: styles.options },
           settings && settings.screenshotEnabled !== false ? h("label", { style: styles.attachment },
@@ -2277,7 +2286,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
             " Добавить пользователя и организацию"
           ),
           h("div", null, h("button", { type: "button", style: styles.smallButton, onClick: () => copyText(JSON.stringify(diagnosticPayload(settings, lastRequest, error, includeIdentityInDiagnostics), null, 2)) }, "Копировать диагностику"))
-        ) : null,
+        ) : null
+          )
+        ),
         h("div", { style: styles.composer },
           h("textarea", {
             style: styles.textarea,

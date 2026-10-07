@@ -1,6 +1,6 @@
 # Tech AI Assistant
 
-Текущая версия: **0.7.3**.
+Текущая версия: **0.7.4**.
 
 Компактный frontend-only app plugin для Grafana 13.0.2. Сборочные зависимости и отдельный backend-контейнер не нужны: ключ хранит Grafana в `secureJsonData`, запросы идут через штатный plugin proxy.
 
