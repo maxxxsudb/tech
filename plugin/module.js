@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.7.2";
+  const PLUGIN_VERSION = "0.7.3";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -44,6 +44,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     explainSamplePanels: 3,
     explainSampleRangeHours: 1,
     screenshotEnabled: true,
+    previewBeforeSend: "always",
     allowedDatasourceUids: "",
     minimumRole: "Viewer",
     systemPrompt:
@@ -101,6 +102,19 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       toolsMode: "text",
     },
   };
+  // Профиль задаёт все поля, которые меняет хоть один профиль: иначе после «Глубокого расследования»
+  // «Обычный» оставил бы его лимиты (20 панелей, 50 строк, таймаут 60 с).
+  function profileValues(name) {
+    const profile = configurationProfiles[name];
+    if (!profile) return undefined;
+    const keys = new Set();
+    Object.keys(configurationProfiles).forEach((key) => Object.keys(configurationProfiles[key]).forEach((field) => keys.add(field)));
+    keys.delete("label");
+    const values = {};
+    keys.forEach((field) => { values[field] = profile[field] !== undefined ? profile[field] : defaults[field]; });
+    return values;
+  }
+
   let cachedSettings = defaults;
 
   function configuredLauncherMode() {
@@ -275,9 +289,44 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     } catch (_) {}
   }
 
+  // Сколько символов приходится на токен у текущей модели. По умолчанию консервативные 2; после первого
+  // ответа с usage плагин измеряет реальное соотношение и запоминает его для модели (с запасом 10%).
+  const CALIBRATION_KEY = "tech-ai-chars-per-token";
+  let charsPerToken = CHARS_PER_TOKEN;
+
+  function calibrationStore() {
+    try {
+      const value = JSON.parse(localStorage.getItem(CALIBRATION_KEY) || "{}");
+      return value && typeof value === "object" ? value : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function loadCalibration(settings) {
+    const stored = Number(calibrationStore()[streamFlagKey(settings)]);
+    charsPerToken = Number.isFinite(stored) && stored >= 1.5 && stored <= 4 ? stored : CHARS_PER_TOKEN;
+    return charsPerToken;
+  }
+
+  function recordCalibration(settings, sample) {
+    if (!sample || !(sample.chars > 2000) || !(sample.prompt > 200)) return charsPerToken;
+    const measured = Math.max(1.5, Math.min(4, (sample.chars / sample.prompt) * 0.9));
+    const store = calibrationStore();
+    const key = streamFlagKey(settings);
+    const previous = Number(store[key]);
+    const next = Number.isFinite(previous) ? Number((previous * 0.5 + measured * 0.5).toFixed(2)) : Number(measured.toFixed(2));
+    store[key] = next;
+    try {
+      localStorage.setItem(CALIBRATION_KEY, JSON.stringify(store));
+    } catch (_) {}
+    charsPerToken = next;
+    return next;
+  }
+
   function estimateTokens(value) {
     const text = typeof value === "string" ? value : JSON.stringify(value || "");
-    return Math.ceil(text.length / CHARS_PER_TOKEN);
+    return Math.ceil(text.length / charsPerToken);
   }
 
   // ---------- Провайдер: запрос, стриминг, размышления ----------
@@ -897,7 +946,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           const query = Object.assign({}, target, {
           refId: target.refId || String.fromCharCode(65 + index),
           datasource: target.datasource || panel.datasource,
-          maxDataPoints: Math.min(Number(target.maxDataPoints) || 100, sampleSize || 500),
+          // Число точек не режем до размера примера: при 3 точках на час шаг 20 минут и пики теряются,
+          // а сводка min/max/avg всё равно занимает одинаково мало места. Пример ограничивает recent и строки.
+          maxDataPoints: Math.min(Number(target.maxDataPoints) || 100, 500),
           intervalMs: Number(target.intervalMs) || 60000,
           });
           if (sampleSize) {
@@ -1052,13 +1103,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const maxQueries = positiveInt(settings.aiQueryMaxPerTurn, defaults.aiQueryMaxPerTurn, 20);
     let executed = 0;
     let usage;
+    let calibration;
     // Результаты запросов режутся по свободному месту в окне модели, иначе на 8k второй раунд не помещается.
     function resultBudget(count) {
       const windowTokens = Number(settings.contextTokens) > 0 ? Number(settings.contextTokens) : 0;
       if (!windowTokens) return 30000;
       const reserve = Number(settings.maxTokens) > 0 ? Number(settings.maxTokens) : 1024;
       const used = estimateTokens(requestBody(settings, contextJson, conversation, { mode }).messages);
-      const free = (windowTokens - reserve - used - 200) * CHARS_PER_TOKEN;
+      const free = (windowTokens - reserve - used - 200) * charsPerToken;
       return Math.max(1500, Math.min(30000, Math.floor(free / Math.max(1, count))));
     }
     function clip(text, limit) {
@@ -1072,8 +1124,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     for (let round = 0; round < rounds; round += 1) {
       const last = round === rounds - 1 || executed >= maxQueries;
       let result;
+      const body = requestBody(settings, contextJson, conversation, { mode, last });
+      // Для калибровки годится только первый раунд без изображений: у него usage относится к одному запросу.
+      const sampleChars = round === 0 && body.messages.every((message) => typeof message.content === "string" && !message.images) ? JSON.stringify(body.messages).length : 0;
       try {
-        result = await post(settings, requestBody(settings, contextJson, conversation, { mode, last }), {
+        result = await post(settings, body, {
           signal: options.signal,
           onDelta: (acc) => {
             const split = splitThink(acc.content);
@@ -1088,6 +1143,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         }
         throw reason;
       }
+      if (result.usage && sampleChars && !calibration) calibration = { chars: sampleChars, prompt: result.usage.prompt };
       if (result.usage) usage = {
         prompt: ((usage && usage.prompt) || 0) + result.usage.prompt,
         completion: ((usage && usage.completion) || 0) + result.usage.completion,
@@ -1138,7 +1194,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       }
       const content = mode === "text" ? split.content.replace(/```grafana-query[\s\S]*?```/gi, "").trim() : split.content;
       if (!content && !steps.length) throw new Error("Провайдер вернул пустой ответ");
-      return { content: content || "Модель исчерпала лимит запросов и не дала итогового ответа.", reasoning, steps, usage };
+      return { content: content || "Модель исчерпала лимит запросов и не дала итогового ответа.", reasoning, steps, usage, calibration };
     }
     throw new Error("Расследование превысило лимит дополнительных запросов");
   }
@@ -1517,6 +1573,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     { label: "серии до 3 на запрос, без последних точек и строк", apply: (c) => shrinkPanelData(c, { series: 3, recent: 0, rows: 0 }) },
     { label: "серии до 1 на запрос", apply: (c) => shrinkPanelData(c, { series: 1 }) },
     { label: "панели только с id и названием", apply: (c) => mapPanels(c, (p) => ({ id: p.id, title: p.title })) },
+    // Список одной строкой примерно вдвое короче массива объектов: на окне 4k помещаются сотни названий.
+    { label: "список панелей одной строкой", apply: (c) => (Array.isArray(c.panels) ? Object.assign(omit(c, ["panels"]), { panelList: c.panels.map((p) => `#${p.id} ${p.title || ""}`.trim()).join("; ") }) : c) },
     { label: "результаты панелей", apply: (c) => Object.assign({}, c, { panelData: (c.panelData || []).map((item) => ({ panelId: item.panelId, title: item.title, error: item.error, skipped: item.skipped })) }) },
     { label: "панели сверх 60", apply: (c) => (Array.isArray(c.panels) ? Object.assign({}, c, { panels: c.panels.slice(0, 60) }) : c) },
   ];
@@ -1557,7 +1615,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const replyReserve = Number(settings.maxTokens) > 0 ? Number(settings.maxTokens) : 1024;
     const fixedTokens = estimateTokens(systemContent(settings, "", settings.toolsMode === "text" ? "text" : "off")) + estimateTokens(prompt) + 50;
     const contextBudgetTokens = windowTokens ? Math.max(500, windowTokens - replyReserve - fixedTokens - Math.floor(windowTokens * 0.25)) : 40000;
-    const fitted = options.fitted || fitContext(context, contextBudgetTokens * CHARS_PER_TOKEN);
+    const fitted = options.fitted || fitContext(context, contextBudgetTokens * charsPerToken);
     const contextTokens = estimateTokens(fitted.json);
     let messages = history.slice();
     if (windowTokens) {
@@ -1795,6 +1853,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         .then(([nextSettings, nextContext]) => {
           if (cancelled) return;
           const key = historyKey(nextContext);
+          loadCalibration(nextSettings.jsonData);
           setSettings(nextSettings.jsonData);
           setContext(nextContext);
           setSelectedPanelIds(availablePanels(nextContext).map((panel) => Number(panel.id)));
@@ -1827,6 +1886,16 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       } : undefined;
     }
 
+    // План получения данных: явный (расследование), пример для «Объяснить» или план уже снятых данных —
+    // обычный вопрос после них переиспользует снимок, а если сменились диапазон, переменные или панели
+    // либо нажато «Обновить данные», снимает их заново по тому же плану.
+    function effectiveDataPlan(action, selectedContext) {
+      const explicit = (action && action.dataPlan) || samplePlanFor(action);
+      if (explicit) return explicit;
+      const previous = snapshotRef.current;
+      return previous && previous.dataPlan && settings.includePanelData !== false ? previous.dataPlan : undefined;
+    }
+
     function prepareSend(promptOverride, action) {
       const prompt = String(promptOverride || input).trim();
       if (!prompt || busy || !settings || !context) return;
@@ -1835,7 +1904,18 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         return;
       }
       const selectedContext = selectContextPanels(withPageState(context), selectedPanelIds);
-      const dataPlan = (action && action.dataPlan) || samplePlanFor(action);
+      const dataPlan = effectiveDataPlan(action, selectedContext);
+      const previous = snapshotRef.current;
+      const reusesSnapshot = Boolean(dataPlan && previous && !previous.stale && previous.key === snapshotKey(selectedContext, selectedPanelIds, settings, dataPlan));
+      const fetchesData = Boolean(dataPlan && !reusesSnapshot);
+      const screenshotOn = includeScreenshot && settings.screenshotEnabled !== false;
+      const previewMode = settings.previewBeforeSend || defaults.previewBeforeSend;
+      // Повторный Enter или повторное нажатие того же действия при открытом предпросмотре отправляет.
+      const sameAsPreview = sendPreview && sendPreview.prompt === prompt && ((sendPreview.action && sendPreview.action.label) || "") === ((action && action.label) || "");
+      if (sameAsPreview || previewMode === "never" || (previewMode === "data" && !fetchesData && !screenshotOn)) {
+        send(prompt, action);
+        return;
+      }
       const plan = planRequest(settings, sanitizeForAI(selectedContext), apiHistory(history), prompt);
       setSendPreview({
         prompt,
@@ -1845,8 +1925,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         panels: availablePanels(selectedContext).map((panel) => ({ id: panel.id, title: panel.title })),
         timeRange: selectedContext.timeRange,
         dataPlan,
-        dataEstimate: dataPlan ? investigationEstimate(settings, selectedContext, dataPlan) : undefined,
-        screenshot: includeScreenshot && settings.screenshotEnabled !== false,
+        dataEstimate: fetchesData ? investigationEstimate(settings, selectedContext, dataPlan) : undefined,
+        snapshotAt: reusesSnapshot ? previous.at : undefined,
+        screenshot: screenshotOn,
       });
     }
 
@@ -1901,13 +1982,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         screenshot = includeScreenshot && settings.screenshotEnabled !== false ? await captureDashboardScreenshot(rootRef.current) : undefined;
         // Диапазон и переменные берутся в момент отправки, а не при открытии чата.
         const selectedContext = selectContextPanels(withPageState(context), selectedPanelIds);
-        const dataPlan = (action && action.dataPlan) || samplePlanFor(action);
+        const dataPlan = effectiveDataPlan(action, selectedContext);
         const key = dataPlan ? snapshotKey(selectedContext, selectedPanelIds, settings, dataPlan) : undefined;
-        let snapshot = key && snapshotRef.current && snapshotRef.current.key === key ? snapshotRef.current : undefined;
-        if (!dataPlan && snapshotRef.current) {
-          const existingKey = snapshotKey(selectedContext, selectedPanelIds, settings, snapshotRef.current.dataPlan);
-          if (existingKey === snapshotRef.current.key) snapshot = snapshotRef.current;
-        }
+        let snapshot = key && snapshotRef.current && !snapshotRef.current.stale && snapshotRef.current.key === key ? snapshotRef.current : undefined;
         if (dataPlan && !snapshot) {
           const range = limitedRange(selectedContext, dataPlan.rangeHours);
           setDataProgress({ completed: 0, total: investigationEstimate(settings, selectedContext, dataPlan).panels });
@@ -1958,7 +2035,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
             setPending(Object.assign({}, update));
           },
         });
-        setLastRequest(Object.assign({}, request, { usage: result.usage, totalMs: Date.now() - started, firstTokenMs: settings.streaming !== false ? firstTokenMs : undefined }));
+        const calibrated = recordCalibration(settings, result.calibration);
+        setLastRequest(Object.assign({}, request, { usage: result.usage, charsPerToken: result.calibration ? calibrated : undefined, totalMs: Date.now() - started, firstTokenMs: settings.streaming !== false ? firstTokenMs : undefined }));
         setHistory((current) => current.concat([{ role: "assistant", content: result.content, reasoning: result.reasoning, steps: result.steps }]));
       } catch (reason) {
         if (reason && reason.name === "AbortError" && userMessage) {
@@ -1989,7 +2067,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       }
     }
 
+    // Следующее сообщение снимет данные заново по тому же плану.
     function refreshData() {
+      if (snapshotRef.current) snapshotRef.current = Object.assign({}, snapshotRef.current, { stale: true });
+      setSnapshotInfo(undefined);
+    }
+
+    function clearData() {
       snapshotRef.current = undefined;
       setSnapshotInfo(undefined);
     }
@@ -2004,7 +2088,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       setError("");
       setRetry(undefined);
       setLastRequest(undefined);
-      refreshData();
+      clearData();
     }
 
     function proposalCard(message, index) {
@@ -2073,6 +2157,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         (lastRequest.data && lastRequest.data.total ? ` · данные: ${lastRequest.data.loaded} из ${lastRequest.data.total}` : "") +
         (lastRequest.dataRange ? ` · диапазон данных: ${new Date(lastRequest.dataRange.from).toLocaleString()} — ${new Date(lastRequest.dataRange.to).toLocaleString()}` : "") +
         (lastRequest.usage ? ` · usage всех раундов: ${lastRequest.usage.prompt} ток. промпта, ${lastRequest.usage.completion} ответа` : "") +
+        (lastRequest.charsPerToken ? ` · оценка токенов откалибрована: ${lastRequest.charsPerToken} симв./ток.` : "") +
         (lastRequest.totalMs ? ` · время ${(lastRequest.totalMs / 1000).toFixed(1)} с${lastRequest.firstTokenMs !== undefined ? `, первое слово ${(lastRequest.firstTokenMs / 1000).toFixed(1)} с` : ""}` : "") +
         (lastRequest.screenshot ? ` · снимок: ${lastRequest.screenshot.format} ${lastRequest.screenshot.width}×${lastRequest.screenshot.height}, ${Math.ceil(lastRequest.screenshot.bytes / 1024)} КБ` : "")
       : "";
@@ -2103,10 +2188,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       ) : null,
       sendPreview ? h("div", { style: styles.proposal, "data-testid": "tech-ai-send-preview" },
         h("strong", null, "Предпросмотр отправки"),
+        h("div", { style: styles.context }, "Enter ещё раз или «Отправить» — отправить. Показ предпросмотра настраивается в Configuration."),
         h("div", { style: styles.context }, `Панели: ${sendPreview.panels.map((panel) => panel.title || `#${panel.id}`).join(", ") || "нет"}`),
         h("div", { style: styles.context }, `Диапазон дашборда: ${(sendPreview.timeRange && sendPreview.timeRange.from) || "не задан"} — ${(sendPreview.timeRange && sendPreview.timeRange.to) || "не задан"}`),
         h("div", { style: styles.context }, `Оценка до получения данных: ≈${(sendPreview.estimatedTokens / 1000).toFixed(1)}k токенов`),
-        sendPreview.dataEstimate ? h("div", { style: styles.context }, `Будет получен пример: ${sendPreview.dataEstimate.datasourceRequests} HTTP-запросов, до ${sendPreview.dataEstimate.targetQueries} запросов панелей, ${sendPreview.dataPlan.sampleRows || "настроенный лимит"} строк/точек.`) : h("div", { style: styles.context }, "Повторных запросов к datasource не будет."),
+        sendPreview.dataEstimate ? h("div", { style: styles.context }, `Будет получен пример: ${sendPreview.dataEstimate.datasourceRequests} HTTP-запросов, до ${sendPreview.dataEstimate.targetQueries} запросов панелей, ${sendPreview.dataPlan.sampleRows || "настроенный лимит"} строк/точек.`) : h("div", { style: styles.context }, sendPreview.snapshotAt ? `Используются уже полученные данные на ${new Date(sendPreview.snapshotAt).toLocaleTimeString()}, повторных запросов к datasource не будет.` : "Повторных запросов к datasource не будет."),
         h("div", { style: styles.context }, sendPreview.screenshot ? "Снимок включён: перед отправкой браузер попросит выбрать вкладку или экран." : "Снимок не передаётся."),
         h("details", { style: styles.context }, h("summary", { style: { cursor: "pointer" } }, "Показать JSON-контекст"), h("pre", { style: styles.pre }, (() => { try { return JSON.stringify(JSON.parse(sendPreview.contextJson), null, 2); } catch (_) { return sendPreview.contextJson; } })())),
         h("div", { style: styles.quickActions },
@@ -2289,7 +2375,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     function applyConfigurationProfile(name) {
       const profile = configurationProfiles[name];
       if (!profile) return;
-      update(omit(profile, ["label"]));
+      update(profileValues(name));
       setStatus(`Профиль «${profile.label}» применён к форме. Нажмите «Сохранить».`);
     }
 
@@ -2441,6 +2527,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       field("Max output tokens (0 = provider default)", "maxTokens", "number"),
       field("Reasoning effort (optional)", "reasoningEffort"),
       checkbox("Потоковый вывод ответа (stream)", "streaming", true),
+      h("label", { style: styles.field },
+        h("span", null, "Предпросмотр перед отправкой"),
+        h("select", { style: styles.input, value: state.previewBeforeSend || defaults.previewBeforeSend, onChange: (event) => update({ previewBeforeSend: event.target.value }) },
+          h("option", { value: "always" }, "Всегда (два действия на каждое сообщение)"),
+          h("option", { value: "data" }, "Только если будут запросы к datasource или снимок"),
+          h("option", { value: "never" }, "Никогда — отправлять сразу")
+        )
+      ),
       checkbox("Разрешить снимок дашборда (если выключено, галка в чате скрыта и захват экрана не запускается)", "screenshotEnabled", true),
       state.screenshotEnabled === false ? null : h("div", { style: Object.assign({}, styles.field, { padding: 10, border: "1px solid rgba(128,128,128,.35)", borderRadius: 4 }) },
         h("strong", null, "Передача снимков"),
@@ -2713,6 +2807,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, configurationProfiles, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
+    __test: { joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
   };
 });

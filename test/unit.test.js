@@ -518,3 +518,51 @@ test("stripPendingQueries прячет блоки grafana-query, в том чи�
   assert.equal(t.stripPendingQueries("Проверю.\n```grafana-query\n{\"datasourceUid\""), "Проверю.\n\n🔎 Готовлю запрос к datasource…");
   assert.equal(t.stripPendingQueries("Обычный ответ"), "Обычный ответ");
 });
+
+test("профиль задаёт все поля, которые меняет любой профиль: «Обычный» сбрасывает лимиты «Глубокого»", () => {
+  const normal = t.profileValues("normal");
+  assert.equal(normal.maxDataPanels, t.defaults.maxDataPanels);
+  assert.equal(normal.maxPanelRows, t.defaults.maxPanelRows);
+  assert.equal(normal.aiQueryTimeoutSeconds, t.defaults.aiQueryTimeoutSeconds);
+  assert.equal(normal.label, undefined);
+  assert.equal(normal.provider, undefined);
+  assert.equal(t.profileValues("deep").maxDataPanels, 20);
+});
+
+test("калибровка оценки токенов по usage сохраняется для модели и меняет оценку", () => {
+  const store = new Map();
+  global.localStorage = { getItem: (key) => (store.has(key) ? store.get(key) : null), setItem: (key, value) => store.set(key, String(value)) };
+  try {
+    const settings = Object.assign({}, t.defaults, { model: "qwen3:8b" });
+    assert.equal(t.loadCalibration(settings), 2);
+    const before = t.planRequest(settings, { note: "x".repeat(3000) }, [], "q").totalTokens;
+    assert.equal(t.recordCalibration(settings, { chars: 12000, prompt: 3000 }), 3.6);
+    assert.equal(t.recordCalibration(settings, { chars: 100, prompt: 3000 }), 3.6, "маленький запрос не калибрует");
+    assert.equal(t.loadCalibration(Object.assign({}, settings, { model: "other" })), 2);
+    assert.equal(t.loadCalibration(settings), 3.6);
+    assert.ok(t.planRequest(settings, { note: "x".repeat(3000) }, [], "q").totalTokens < before);
+  } finally {
+    t.loadCalibration(Object.assign({}, t.defaults, { model: "none" }));
+    delete global.localStorage;
+  }
+});
+
+test("пример для «Объяснить» ограничивает строки, но не число точек запроса", async () => {
+  const sent = [];
+  const original = global.fetch;
+  global.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    sent.push(...body.queries);
+    return { ok: true, status: 200, text: async () => JSON.stringify({ results: { A: { status: 200, frames: [rawSeries({}, Array.from({ length: 60 }, (_, i) => i))] } } }) };
+  };
+  try {
+    const panel = { id: 1, title: "P", datasource: { type: "prometheus", uid: "prom" }, targets: [{ refId: "A", expr: "up" }] };
+    const data = await t.loadPanelData(t.defaults, { timeRange: { from: "now-1h", to: "now" }, panel }, { sampleRows: 3, maxPanels: 1, maxTargets: 1, rangeHours: 1 });
+    assert.equal(sent[0].maxDataPoints, 100);
+    const series = data[0].results[0].result.series[0];
+    assert.equal(series.max, 59);
+    assert.equal(series.recent.length, 3);
+  } finally {
+    global.fetch = original;
+  }
+});
