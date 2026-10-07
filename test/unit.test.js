@@ -267,6 +267,9 @@ test("drawer ограничивает длинный ответ шириной v
   assert.equal(t.styles.contextControls.overflowY, "auto");
   assert.equal(t.styles.notices.overflowY, "auto");
   assert.equal(t.styles.notices.minHeight, 0);
+  assert.equal(t.styles.user.flexShrink, 0);
+  assert.equal(t.styles.assistant.flexShrink, 0);
+  assert.match(t.drawerScopedCss, /tech-ai-history\\?"\] > \* \{ flex-shrink: 0; \}/);
   assert.equal(t.styles.assistant.maxWidth, "100%");
   assert.equal(t.styles.pre.maxWidth, "100%");
   assert.match(t.drawerScopedCss, /markdown-html table/);

@@ -136,8 +136,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     root: { display: "flex", flexDirection: "column", width: "100%", maxWidth: "100%", height: "100%", minWidth: 0, minHeight: 0, gap: 8, overflow: "hidden", boxSizing: "border-box" },
     header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0, maxWidth: "100%" },
     history: { flex: "1 1 0", minWidth: 0, minHeight: 180, maxWidth: "100%", overflowX: "hidden", overflowY: "auto", overscrollBehavior: "contain", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: 10, padding: "6px 4px 10px" },
-    user: { alignSelf: "flex-end", minWidth: 0, maxWidth: "88%", padding: "8px 12px", borderRadius: "10px 10px 2px 10px", background: "#1f60c4", color: "white", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", boxShadow: "0 1px 2px rgba(0,0,0,.18)" },
-    assistant: { alignSelf: "stretch", minWidth: 0, maxWidth: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(128,128,128,.22)", background: "rgba(128,128,128,.09)", overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word", boxSizing: "border-box" },
+    user: { alignSelf: "flex-end", flexShrink: 0, minWidth: 0, maxWidth: "88%", padding: "8px 12px", borderRadius: "10px 10px 2px 10px", background: "#1f60c4", color: "white", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", boxShadow: "0 1px 2px rgba(0,0,0,.18)" },
+    assistant: { alignSelf: "stretch", flexShrink: 0, minWidth: 0, maxWidth: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(128,128,128,.22)", background: "rgba(128,128,128,.09)", overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word", boxSizing: "border-box" },
     markdown: { minWidth: 0, maxWidth: "100%", lineHeight: 1.5, overflowWrap: "anywhere", wordBreak: "break-word" },
     context: { color: "var(--text-secondary, #999)", fontSize: 12 },
     attachment: { color: "var(--text-secondary, #999)", fontSize: 12, marginTop: 4 },
@@ -2662,6 +2662,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     "#tech-ai-assistant-drawer .markdown-html table { display: block; max-width: 100%; overflow-x: auto; }",
     "#tech-ai-assistant-drawer .markdown-html img, #tech-ai-assistant-drawer .markdown-html svg { max-width: 100%; height: auto; }",
     "#tech-ai-assistant-drawer pre, #tech-ai-assistant-drawer code { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }",
+    // Сообщения не сжимаются под высоту истории, иначе длинный ответ обрезается без прокрутки.
+    "#tech-ai-assistant-drawer [data-testid=\"tech-ai-history\"] > * { flex-shrink: 0; }",
+    "#tech-ai-assistant-drawer .markdown-html h1 { font-size: 1.3em; margin: .5em 0 .35em; }",
+    "#tech-ai-assistant-drawer .markdown-html h2 { font-size: 1.15em; margin: .6em 0 .3em; }",
+    "#tech-ai-assistant-drawer .markdown-html h3, #tech-ai-assistant-drawer .markdown-html h4 { font-size: 1.02em; margin: .5em 0 .25em; }",
   ].join("\n");
 
   function openDrawer() {
