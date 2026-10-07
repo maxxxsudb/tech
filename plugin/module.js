@@ -2208,8 +2208,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       h("div", { style: styles.header },
         h("div", { style: styles.context }, context
           ? `${context.dashboardTitle || "Текущая страница Grafana"}${context.panel ? ` · ${context.panel.title}` : ""}${settings ? ` · ${modelName(settings) || "модель не задана"}${settings.streaming !== false && isStreamUnsupported(settings) ? " (без stream)" : ""}` : ""}`
-          : "Загрузка контекста…"),
-        h("button", { type: "button", style: styles.smallButton, disabled: !history.length && !busy, onClick: newDialog }, "Новый диалог")
+          : "Загрузка контекста…")
       ),
       h("div", { style: styles.tabs, role: "tablist" },
         [["chat", "Чат"], ["context", `Контекст · панели ${selectedPanelIds.length}/${panels.length}`], ["diag", "Диагностика"]].map(([id, label]) =>
@@ -2323,6 +2322,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         h("div", { style: styles.actionBar }, quickPrompts.map((action) =>
           h("button", { key: action.label, type: "button", style: Object.assign({}, styles.button, { flex: "1 1 auto" }), disabled: busy || !ready, onClick: () => action.investigation ? openInvestigation(action) : prepareSend(action.prompt, action) }, action.label)
         )),
+        history.length || busy ? h("div", { style: { display: "flex", justifyContent: "flex-end" } },
+          h("button", { type: "button", style: styles.linkButton, onClick: newDialog }, "Новый диалог")
+        ) : null,
         sendPreview ? h("div", { style: styles.confirm, "data-testid": "tech-ai-send-preview" },
           h("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } },
             h("strong", { style: { marginRight: "auto", fontSize: 13 } }, "Проверьте и отправьте"),
