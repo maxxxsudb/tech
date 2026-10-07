@@ -37,13 +37,23 @@ const puppeteer = require('puppeteer');
   await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
   await page.evaluate(() => {
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
-    [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Исправить запрос').click();
+    [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Объяснить').click();
   });
+  await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true, timeout: 10000 });
+  await page.click('[data-testid="tech-ai-send-preview"] button');
   await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('Применить к дашборду'), { timeout: 60000 });
   await page.evaluate(() => {
     const details = document.querySelector('#tech-ai-assistant-drawer details');
     details.open = true;
   });
+  const drawerLayout = await page.evaluate(() => {
+    const drawer = document.querySelector('#tech-ai-assistant-drawer').getBoundingClientRect();
+    const close = document.querySelector('#tech-ai-assistant-drawer button[title^="Закрыть"]').getBoundingClientRect();
+    return { drawerLeft: drawer.left, drawerRight: drawer.right, drawerWidth: drawer.width, closeLeft: close.left, closeRight: close.right, viewport: window.innerWidth };
+  });
+  if (drawerLayout.drawerLeft < 0 || drawerLayout.drawerRight > drawerLayout.viewport || drawerLayout.drawerWidth > drawerLayout.viewport || drawerLayout.closeLeft < 0 || drawerLayout.closeRight > drawerLayout.viewport) {
+    throw new Error(`Drawer escaped viewport: ${JSON.stringify(drawerLayout)}`);
+  }
   const text = await page.$eval('#tech-ai-assistant-drawer', (node) => node.innerText);
   await page.screenshot({ path: '/test/features-success.png', fullPage: false });
   if (!/Данные панелей: \d+ из 3/.test(text)) throw new Error('Live panel data note is missing');

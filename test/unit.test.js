@@ -212,6 +212,26 @@ test("безопасный профиль по умолчанию выключа
   assert.equal(body.stream, false);
 });
 
+test("диагностика не включает identity без явного разрешения", () => {
+  const ordinary = t.diagnosticPayload(t.defaults, { totalTokens: 100 }, "boom", false);
+  const allowed = t.diagnosticPayload(t.defaults, { totalTokens: 100 }, "boom", true);
+  assert.equal(ordinary.identity, undefined);
+  assert.equal(allowed.identity.orgId, 1);
+  assert.equal(ordinary.request.contextJson, undefined);
+});
+
+test("профили не меняют provider, модель и API URL", () => {
+  for (const profile of Object.values(t.configurationProfiles)) {
+    assert.equal(profile.provider, undefined);
+    assert.equal(profile.model, undefined);
+    assert.equal(profile.apiUrl, undefined);
+    assert.equal(profile.streaming, false);
+  }
+  assert.equal(t.configurationProfiles.safe.includePanelData, false);
+  assert.equal(t.configurationProfiles.normal.explainSampleRows, 3);
+  assert.equal(t.configurationProfiles.deep.contextTokens, 32768);
+});
+
 test("ошибка прокси сохраняет детали API и даёт подсказку для 502", () => {
   assert.match(t.formatError({ status: 400, data: { error: { type: "invalid_request_error", param: "messages[1].content", message: "image_url is not supported" } } }), /image_url is not supported/);
   assert.match(t.formatError({ status: 502, data: { message: "Bad Gateway" } }), /GF_DATAPROXY_TIMEOUT=300/);
@@ -342,7 +362,7 @@ test("runAssistant соблюдает лимит запросов AI за оди
     post: async (_settings, body) => {
       requests.push(body);
       const content = requests.length === 1 ? block(1) + block(2) + block(3) : "Итог";
-      return { content, reasoning: "", toolCalls: [] };
+      return { content, reasoning: "", toolCalls: [], usage: { prompt: 10, completion: 2 } };
     },
     executeQuery: async () => {
       executed += 1;
@@ -354,6 +374,23 @@ test("runAssistant соблюдает лимит запросов AI за оди
   assert.equal(result.steps.filter((step) => step.error).length, 1);
   assert.match(requests[1].messages[requests[1].messages.length - 1].content, /Лимит запросов исчерпан/);
   assert.equal(requests.length, 2);
+  assert.deepEqual(result.usage, { prompt: 20, completion: 4 });
+});
+
+test("оценка расследования заранее считает нагрузку и ограничивает диапазон", () => {
+  const context = {
+    timeRange: { from: "now-7d", to: "now" },
+    panels: Array.from({ length: 5 }, (_, index) => ({
+      id: index + 1,
+      datasource: { type: "prometheus", uid: "prom" },
+      targets: [{ expr: "up" }, { expr: "rate(x[5m])" }, { expr: "sum(y)" }],
+    })),
+  };
+  const estimate = t.investigationEstimate(t.defaults, context, { rangeHours: 6, maxPanels: 3, maxTargets: 2 });
+  assert.equal(estimate.datasourceRequests, 3);
+  assert.equal(estimate.targetQueries, 6);
+  assert.equal(estimate.to - estimate.from, 6 * 3600e3);
+  assert.equal(estimate.clamped, true);
 });
 
 test("fitContext при сильном сжатии сохраняет названия всех панелей, а не только первых 60", () => {
@@ -440,6 +477,28 @@ test("loadPanelData запрашивает все выбранные панел�
     assert.deepEqual(calls, [2, 2, 2, 2, 2]);
     assert.match(data[0].note, /ещё 1 пропущено/);
     assert.match(data[6].skipped, /лимит 5 панелей/);
+  } finally {
+    global.fetch = original;
+  }
+});
+
+test("loadPanelData имеет общий таймаут и сообщает прогресс", async () => {
+  const progress = [];
+  const original = global.fetch;
+  global.fetch = async (_url, init) => new Promise((_resolve, reject) => {
+    if (init.signal.aborted) reject(new DOMException("Aborted", "AbortError"));
+    else init.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+  });
+  try {
+    const panels = Array.from({ length: 5 }, (_, index) => ({ id: index + 1, title: `P${index + 1}`, datasource: { type: "prometheus", uid: "prom" }, targets: [{ refId: "A", expr: "up" }] }));
+    const data = await t.loadPanelData(t.defaults, { timeRange: { from: "now-1h", to: "now" }, panels }, {
+      totalTimeoutSeconds: 1,
+      onProgress: (value) => progress.push(value),
+    });
+    assert.equal(data.length, 5);
+    assert.ok(data.every((item) => /Общий таймаут/.test(item.error)));
+    assert.deepEqual(progress[0], { completed: 0, total: 5 });
+    assert.deepEqual(progress.at(-1), { completed: 5, total: 5 });
   } finally {
     global.fetch = original;
   }

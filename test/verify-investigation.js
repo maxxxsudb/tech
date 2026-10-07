@@ -35,6 +35,11 @@ const puppeteer = require('puppeteer');
       const drawer = document.querySelector('#tech-ai-assistant-drawer');
       [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Расследовать').click();
     });
+    await page.waitForSelector('[data-testid="tech-ai-investigation-setup"]', { visible: true, timeout: 10000 });
+    await page.evaluate(() => {
+      const drawer = document.querySelector('#tech-ai-assistant-drawer');
+      [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Начать расследование').click();
+    });
     await page.waitForFunction(() => {
       const drawer = document.querySelector('#tech-ai-assistant-drawer');
       return !drawer.querySelector('textarea').disabled && !drawer.innerText.endsWith('…');

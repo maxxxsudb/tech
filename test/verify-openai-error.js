@@ -26,6 +26,8 @@ const puppeteer = require('puppeteer');
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
     [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Отправить').click();
   });
+  await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true, timeout: 10000 });
+  await page.click('[data-testid="tech-ai-send-preview"] button');
   await new Promise((resolve) => setTimeout(resolve, 5000));
   const error = await page.$eval('#tech-ai-assistant-drawer', (node) => node.innerText);
   console.log(error);

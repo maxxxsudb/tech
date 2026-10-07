@@ -45,6 +45,14 @@ const puppeteer = require('puppeteer');
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
     [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Расследовать').click();
   });
+  await page.waitForSelector('[data-testid="tech-ai-investigation-setup"]', { visible: true, timeout: 10000 });
+  await page.evaluate(() => {
+    const drawer = document.querySelector('#tech-ai-assistant-drawer');
+    const checkboxes = [...drawer.querySelectorAll('[data-testid="tech-ai-investigation-setup"] input[type="checkbox"]')];
+    const allowQueries = checkboxes[checkboxes.length - 1];
+    if (allowQueries && !allowQueries.checked) allowQueries.click();
+    [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Начать расследование').click();
+  });
   await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('TOOL RESULT RECEIVED'), { timeout: 60000 });
   if (proxyCalls !== 2 || !toolResultReturned) throw new Error(`Tool loop failed: calls=${proxyCalls}, returned=${toolResultReturned}`);
   console.log('investigation-tool-test=ok');

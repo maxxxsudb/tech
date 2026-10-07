@@ -56,6 +56,8 @@ const puppeteer = require('puppeteer');
     if (!button) throw new Error('Send button not found');
     button.click();
   });
+  await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true, timeout: 10000 });
+  await page.click('[data-testid="tech-ai-send-preview"] button');
   await page.waitForFunction(
     () => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('Полученный контекст Grafana:') && document.querySelector('#tech-ai-assistant-drawer').innerText.includes('"dashboardUid": "tech"'),
     { timeout: 15000 }

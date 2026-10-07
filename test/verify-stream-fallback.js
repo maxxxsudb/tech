@@ -29,12 +29,16 @@ const puppeteer = require('puppeteer');
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
     [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Отправить').click();
   });
+  await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true, timeout: 10000 });
+  await page.click('[data-testid="tech-ai-send-preview"] button');
   await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('NON_STREAM_FALLBACK_OK'), { timeout: 30000 });
   await page.type('#tech-ai-assistant-drawer textarea', 'second fallback test');
   await page.evaluate(() => {
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
     [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Отправить').click();
   });
+  await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true, timeout: 10000 });
+  await page.click('[data-testid="tech-ai-send-preview"] button');
   await page.waitForFunction(() => {
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
     return !drawer.querySelector('textarea').disabled && (drawer.innerText.match(/NON_STREAM_FALLBACK_OK/g) || []).length === 2;

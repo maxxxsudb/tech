@@ -83,6 +83,8 @@ const puppeteer = require('puppeteer');
     if (!button) throw new Error('Send button not found');
     button.click();
   });
+  await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true, timeout: 10000 });
+  await page.click('[data-testid="tech-ai-send-preview"] button');
   await page.waitForFunction(() => document.body.innerText.includes('mock: ping from ui'), { timeout: 15000 });
   await page.screenshot({ path: '/test/ai-assistant-ui.png', fullPage: false });
 

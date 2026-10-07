@@ -51,6 +51,8 @@ const puppeteer = require('puppeteer');
       const drawer = document.querySelector('#tech-ai-assistant-drawer');
       [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Исправить запрос').click();
     });
+    await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true, timeout: 10000 });
+    await page.click('[data-testid="tech-ai-send-preview"] button');
     await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('Применить к дашборду'), { timeout: 60000 });
     page.once('dialog', (dialog) => dialog.accept());
     await Promise.all([
