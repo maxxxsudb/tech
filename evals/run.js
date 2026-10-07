@@ -82,16 +82,28 @@ async function setup() {
   return { t, settings, target: endpoint };
 }
 
+// Сырые кадры /api/ds/query сворачиваются тем же кодом, что и в плагине.
+function summarizeResults(t, settings, results) {
+  return (results || []).map((entry) => (entry.result && Array.isArray(entry.result.frames) && entry.result.frames.some((frame) => frame.schema)
+    ? Object.assign({}, entry, { result: t.summarizeQueryResult(entry.result, t.dataLimits(settings)) })
+    : entry));
+}
+
+function prepareContext(t, settings, context) {
+  return Object.assign({}, context, { panelData: (context.panelData || []).map((item) => Object.assign({}, item, { results: summarizeResults(t, settings, item.results) })) });
+}
+
 async function runCase(t, baseSettings, testCase, timeoutMs) {
   const settings = Object.assign({}, baseSettings, testCase.settings || {});
-  const plan = t.planRequest(settings, testCase.context, [], testCase.prompt);
+  const context = prepareContext(t, settings, testCase.context);
+  const plan = t.planRequest(settings, context, [], testCase.prompt);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const started = Date.now();
   let firstTokenMs;
   const output = { plan, steps: [], codeBlocks: [], content: "", reasoning: "" };
   try {
-    const result = await t.runAssistant(settings, testCase.context, plan.contextJson, [{ role: "user", content: testCase.prompt }], {
+    const result = await t.runAssistant(settings, context, plan.contextJson, [{ role: "user", content: testCase.prompt }], {
       queries: Boolean(testCase.queries),
       signal: controller.signal,
       onUpdate: (update) => {
@@ -99,7 +111,8 @@ async function runCase(t, baseSettings, testCase, timeoutMs) {
       },
       executeQuery: async (_settings, _context, args) => {
         if (!testCase.respond) throw new Error("В этом кейсе запросы не предусмотрены");
-        return testCase.respond(args || {});
+        const response = testCase.respond(args || {});
+        return Object.assign({}, response, { results: summarizeResults(t, settings, response.results) });
       },
     });
     Object.assign(output, result);
