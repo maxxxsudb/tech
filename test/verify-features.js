@@ -46,7 +46,7 @@ const puppeteer = require('puppeteer');
   });
   const text = await page.$eval('#tech-ai-assistant-drawer', (node) => node.innerText);
   await page.screenshot({ path: '/test/features-success.png', fullPage: false });
-  if (!text.includes('Переданы результаты панелей: 3')) throw new Error('Live panel data note is missing');
+  if (!/Данные панелей: \d+ из 3/.test(text)) throw new Error('Live panel data note is missing');
   if (!text.includes('alice')) throw new Error('Live datasource rows are missing from context preview');
   if (text.includes('gsk_supersecretvalue12345') || !text.includes('[REDACTED]')) throw new Error('Secret redaction failed');
   if (!text.includes('Применить к дашборду')) throw new Error('Dashboard diff/apply control is missing');

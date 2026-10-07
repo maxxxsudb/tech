@@ -13,12 +13,18 @@ const panels = {
   byCode: { id: 6, title: "Requests by code", type: "timeseries", datasource: PROM, targets: [{ refId: "A", datasource: PROM, expr: "sum by (code) (rate(http_requests_total{job=\"api\"}[5m]))" }] },
 };
 
+// Ответы datasource в том виде, в каком их возвращает /api/ds/query; run.js сворачивает их тем же кодом,
+// что и плагин (summarizeQueryResult), поэтому модель видит ровно то, что увидела бы в Grafana.
+function rawFrame(refId, fields, columns) {
+  return { schema: { refId, fields }, data: { values: columns } };
+}
+
 function series(refId, name, labels, values) {
   return {
     refId,
     result: {
       status: 200,
-      frames: [{ refId, fields: [{ name: "Time", type: "time" }, { name, type: "number", labels }], totalRows: values.length, rows: values.map((value, index) => ({ Time: 1790000000000 + index * 300000, [name]: value })) }],
+      frames: [rawFrame(refId, [{ name: "Time", type: "time" }, { name, type: "number", labels }], [values.map((_, index) => 1790000000000 + index * 300000), values])],
     },
   };
 }
@@ -94,7 +100,7 @@ function investigationResponder(args) {
           { Time: 1790000660000, Line: 'level=error msg="upstream request failed" err="dial tcp 10.0.3.15:5432: connect: connection refused" db=db-primary' },
         ]
       : [{ Time: 1790000600000, Line: 'level=info msg="request served" status=200' }];
-    return { datasource: LOKI, query: args.query, results: [{ refId: "AI", result: { status: 200, frames: [{ refId: "AI", fields: [{ name: "Time", type: "time" }, { name: "Line", type: "string" }], totalRows: rows.length, rows }] } }] };
+    return { datasource: LOKI, query: args.query, results: [{ refId: "AI", result: { status: 200, frames: [rawFrame("AI", [{ name: "Time", type: "time" }, { name: "Line", type: "string" }], [rows.map((row) => row.Time), rows.map((row) => row.Line)])] } }] };
   }
   if (args.datasourceUid === "prom") {
     return { datasource: PROM, query: args.query, results: [series("AI", "Value", { code: "503" }, [0, 0, 0.1, 0.8, 2.3, 2.5])] };
@@ -193,7 +199,7 @@ module.exports = [
     prompt: "Кто из пользователей залогинился больше всех и сколько раз?",
     context: dashboard({
       panel: panels.users,
-      panelData: [panelData(panels.users, [{ refId: "A", result: { status: 200, frames: [{ refId: "A", fields: [{ name: "name", type: "string" }, { name: "logins", type: "number" }, { name: "role", type: "string" }], totalRows: 4, rows: [{ name: "alice", logins: 42, role: "admin" }, { name: "bob", logins: 17, role: "user" }, { name: "carol", logins: 8, role: "user" }, { name: "dave", logins: 3, role: "viewer" }] }] } }])],
+      panelData: [panelData(panels.users, [{ refId: "A", result: { status: 200, frames: [rawFrame("A", [{ name: "name", type: "string" }, { name: "logins", type: "number" }, { name: "role", type: "string" }], [["alice", "bob", "carol", "dave"], [42, 17, 8, 3], ["admin", "user", "user", "viewer"]])] } }])],
     }),
     checks: [check.says(/alice/i, "называет alice"), check.says(/42/, "называет 42")],
   },

@@ -35,6 +35,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     launcherMode: "both",
     includePanelData: true,
     maxPanelRows: 20,
+    maxDataPanels: 12,
+    maxTargetsPerPanel: 6,
+    maxSeriesPerQuery: 10,
+    recentPoints: 6,
+    screenshotEnabled: true,
     allowedDatasourceUids: "",
     minimumRole: "Viewer",
     systemPrompt:
@@ -98,6 +103,23 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const value = String(path || defaults.apiPath).trim();
     if (value.includes("..")) throw new Error("API path не должен содержать '..'");
     return value.startsWith("/") ? value : `/${value}`;
+  }
+
+  // Grafana склеивает адрес как apiUrl + path. Если API URL уже заканчивается на /v1
+  // (или /v1beta/openai), а путь начинается с того же, убираем повтор из пути.
+  function joinEndpoint(apiUrl, path) {
+    const base = String(apiUrl || "").trim().replace(/\/+$/, "");
+    let tail = path ? normalizePath(path) : "";
+    const baseParts = base.replace(/^[a-z]+:\/\/[^/]*/i, "").split("/").filter(Boolean);
+    const tailParts = tail.split("/").filter(Boolean);
+    for (let size = Math.min(baseParts.length, tailParts.length - 1); size > 0; size -= 1) {
+      const overlap = tailParts.slice(0, size);
+      if (/^v\d/i.test(overlap[0]) && overlap.join("/") === baseParts.slice(-size).join("/")) {
+        tail = `/${tailParts.slice(size).join("/")}`;
+        break;
+      }
+    }
+    return { apiUrl: base, path: tail, url: base + tail };
   }
 
   function formatError(reason) {
@@ -222,7 +244,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   const evidenceContract =
     "Опирайся на фактические результаты panelData как на источник истины. " +
     "Если frames пуст, totalRows равен 0 или запрос не вернул строк, прямо скажи, что за выбранный период данных не найдено; не выдумывай события, значения и причины. " +
-    "Предлагаемые запросы и гипотезы явно отделяй от уже наблюдаемых фактов и не обещай, что новый фильтр обязательно найдёт данные.";
+    "Предлагаемые запросы и гипотезы явно отделяй от уже наблюдаемых фактов и не обещай, что новый фильтр обязательно найдёт данные. " +
+    "Временные ряды переданы сводкой за весь период dataRange: min, max, avg, first, last, время min/max (minAt, maxAt) и последние точки recent; всё время в UTC. " +
+    "Таблицы переданы как columns и rows, логи — сначала новые.";
 
   function textToolContract(settings) {
     return (
@@ -346,6 +370,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     if (choice.finish_reason) acc.finishReason = choice.finish_reason;
   }
 
+  function applyUsage(acc, json) {
+    const usage = json && json.usage;
+    if (usage && typeof usage === "object" && (usage.prompt_tokens || usage.completion_tokens)) {
+      acc.usage = { prompt: Number(usage.prompt_tokens) || 0, completion: Number(usage.completion_tokens) || 0 };
+    }
+  }
+
   async function readEventStream(response, onDelta) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -365,6 +396,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       }
       sawData = true;
       if (json.error) throw { status: response.status, data: json };
+      applyUsage(acc, json);
       applyChoice(acc, json.choices && json.choices[0]);
     }
     for (;;) {
@@ -383,6 +415,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     if (!sawData && buffer.trim().startsWith("{")) {
       const json = JSON.parse(buffer);
       if (json.error) throw { status: response.status, data: json };
+      applyUsage(acc, json);
       applyChoice(acc, json.choices && json.choices[0]);
     } else {
       handleLine(buffer);
@@ -426,6 +459,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const json = await response.json();
     if (json.error) throw { status: response.status, data: json };
     const acc = emptyAccumulator();
+    applyUsage(acc, json);
     applyChoice(acc, json.choices && json.choices[0]);
     if (!json.choices || !json.choices[0]) throw new Error("Провайдер вернул ответ без choices[0]");
     if (options.onDelta) options.onDelta(acc);
@@ -498,37 +532,163 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     return fallback === "now" ? Date.now() : Date.now() - 3600000;
   }
 
-  function summarizeFrame(frame, maxRows) {
+  // ---------- Сводка результатов для модели ----------
+  // Временной ряд отдаётся статистикой (min/max/avg/последнее/время пика) и последними точками,
+  // таблицы и логи — компактными строками (логи — самыми свежими). Так модель видит конец периода и пики,
+  // а контекст в разы меньше, чем строки объектами.
+
+  function dataLimits(settings) {
+    settings = settings || {};
+    return {
+      rows: Math.max(0, Math.min(100, Number.isFinite(Number(settings.maxPanelRows)) ? Math.floor(Number(settings.maxPanelRows)) : defaults.maxPanelRows)),
+      recent: Math.max(0, Math.min(50, Number.isFinite(Number(settings.recentPoints)) ? Math.floor(Number(settings.recentPoints)) : defaults.recentPoints)),
+      series: positiveInt(settings.maxSeriesPerQuery, defaults.maxSeriesPerQuery, 50),
+    };
+  }
+
+  function roundValue(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return value;
+    if (Number.isInteger(value)) return value;
+    return Number(value.toPrecision(4));
+  }
+
+  function shortTime(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return value;
+    try {
+      return new Date(number).toISOString().replace(/:\d\d\.\d{3}Z$/, "Z");
+    } catch (_) {
+      return value;
+    }
+  }
+
+  // Короткое время для точек серии: «10-05 10:41» (UTC); полный диапазон данных — в dataRange.
+  function pointTime(value) {
+    const text = shortTime(value);
+    return typeof text === "string" && /^\d{4}-/.test(text) ? text.slice(5, 16).replace("T", " ") : text;
+  }
+
+  function frameColumns(frame) {
     const schema = frame && frame.schema ? frame.schema : {};
     const fields = Array.isArray(schema.fields) ? schema.fields : [];
     const values = frame && frame.data && Array.isArray(frame.data.values) ? frame.data.values : [];
-    const totalRows = values.reduce((max, column) => Math.max(max, Array.isArray(column) ? column.length : 0), 0);
-    const rowCount = Math.min(maxRows, totalRows);
-    const rows = [];
-    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-      const row = {};
-      fields.forEach((field, fieldIndex) => { row[field.name || `field_${fieldIndex}`] = values[fieldIndex] && values[fieldIndex][rowIndex]; });
-      rows.push(row);
+    return { schema, fields, values };
+  }
+
+  function seriesName(field, schema) {
+    const labels = field.labels && typeof field.labels === "object" ? field.labels : undefined;
+    const labelText = labels ? Object.keys(labels).map((key) => `${key}=${labels[key]}`).join(",") : "";
+    return (field.config && field.config.displayNameFromDS) || labelText || schema.name || field.name || "value";
+  }
+
+  function summarizeSeries(field, schema, times, values, recent) {
+    const points = [];
+    for (let index = 0; index < values.length; index += 1) {
+      const value = values[index];
+      if (typeof value === "number" && Number.isFinite(value)) points.push([times[index], value]);
     }
+    if (points.length > 1 && Number(points[0][0]) > Number(points[points.length - 1][0])) points.sort((a, b) => Number(a[0]) - Number(b[0]));
+    const result = { name: seriesName(field, schema), unit: field.config && field.config.unit };
+    if (!points.length) return Object.assign(result, { note: "нет числовых значений" });
+    let min = points[0];
+    let max = points[0];
+    let sum = 0;
+    points.forEach((point) => {
+      if (point[1] < min[1]) min = point;
+      if (point[1] > max[1]) max = point;
+      sum += point[1];
+    });
+    const first = points[0];
+    const last = points[points.length - 1];
+    return Object.assign(result, {
+      min: roundValue(min[1]),
+      minAt: pointTime(min[0]),
+      max: roundValue(max[1]),
+      maxAt: pointTime(max[0]),
+      avg: roundValue(sum / points.length),
+      first: roundValue(first[1]),
+      last: roundValue(last[1]),
+      nulls: values.length - points.length || undefined,
+      recent: recent > 0 ? points.slice(-recent).map((point) => [pointTime(point[0]), roundValue(point[1])]) : undefined,
+    });
+  }
+
+  function summarizeTable(frame, rowsLimit) {
+    const { schema, fields, values } = frameColumns(frame);
+    const totalRows = values.reduce((max, column) => Math.max(max, Array.isArray(column) ? column.length : 0), 0);
+    const timeIndex = fields.findIndex((field) => field.type === "time");
+    let order = [];
+    for (let index = 0; index < totalRows; index += 1) order.push(index);
+    // Логи и события: самые свежие строки, а не первые попавшиеся.
+    if (timeIndex >= 0 && Array.isArray(values[timeIndex])) order.sort((a, b) => Number(values[timeIndex][b]) - Number(values[timeIndex][a]));
+    order = order.slice(0, rowsLimit);
+    const columns = fields.map((field, index) => field.name || `field_${index}`);
     const meta = schema.meta || {};
     return {
       name: schema.name,
-      refId: schema.refId,
-      fields: fields.map((field) => ({ name: field.name, type: field.type, labels: field.labels })),
+      columns,
       totalRows,
-      rows,
-      executedQuery: meta.executedQueryString ? redactString(meta.executedQueryString).slice(0, 4000) : undefined,
+      order: timeIndex >= 0 ? "сначала новые" : undefined,
+      rows: order.map((rowIndex) => fields.map((field, fieldIndex) => {
+        const value = values[fieldIndex] && values[fieldIndex][rowIndex];
+        if (field.type === "time") return shortTime(value);
+        if (typeof value === "string") return redactString(value).slice(0, 500);
+        return roundValue(value);
+      })),
+      labels: fields.some((field) => field.labels) ? fields.map((field) => field.labels || null) : undefined,
       notices: meta.notices,
     };
   }
 
-  function summarizeQueryResult(result, maxRows) {
+  function isTimeSeriesFrame(fields) {
+    const hasTime = fields.some((field) => field.type === "time");
+    const others = fields.filter((field) => field.type !== "time");
+    return hasTime && others.length > 0 && others.every((field) => field.type === "number");
+  }
+
+  function summarizeQueryResult(result, limits) {
     if (!result) return { error: "Пустой ответ datasource" };
-    return {
+    limits = Object.assign({ rows: defaults.maxPanelRows, recent: defaults.recentPoints, series: defaults.maxSeriesPerQuery }, typeof limits === "number" ? { rows: limits } : limits || {});
+    const frames = Array.isArray(result.frames) ? result.frames : [];
+    const firstMeta = frames[0] && frames[0].schema && frames[0].schema.meta;
+    const summary = {
       status: result.status,
-      error: result.error || (result.frames && result.frames[0] && result.frames[0].schema && result.frames[0].schema.meta && result.frames[0].schema.meta.custom && result.frames[0].schema.meta.custom.error) || undefined,
-      frames: Array.isArray(result.frames) ? result.frames.slice(0, 4).map((frame) => summarizeFrame(frame, maxRows)) : [],
+      error: result.error || (firstMeta && firstMeta.custom && firstMeta.custom.error) || undefined,
     };
+    const series = [];
+    const tables = [];
+    let from;
+    let to;
+    frames.forEach((frame) => {
+      const { schema, fields, values } = frameColumns(frame);
+      if (!isTimeSeriesFrame(fields)) {
+        tables.push(summarizeTable(frame, limits.rows));
+        return;
+      }
+      const timeIndex = fields.findIndex((field) => field.type === "time");
+      const times = values[timeIndex] || [];
+      if (times.length) {
+        const start = Math.min(Number(times[0]), Number(times[times.length - 1]));
+        const end = Math.max(Number(times[0]), Number(times[times.length - 1]));
+        from = from === undefined ? start : Math.min(from, start);
+        to = to === undefined ? end : Math.max(to, end);
+      }
+      fields.forEach((field, index) => {
+        if (index !== timeIndex) series.push(summarizeSeries(field, schema, times, values[index] || [], limits.recent));
+      });
+    });
+    if (series.length) {
+      summary.dataRange = from !== undefined ? { from: shortTime(from), to: shortTime(to) } : undefined;
+      summary.series = series.length > limits.series
+        ? series.slice().sort((a, b) => (Number(b.max) || 0) - (Number(a.max) || 0)).slice(0, limits.series)
+        : series;
+      if (series.length > limits.series) summary.seriesNote = `Показаны ${limits.series} серий с наибольшим max из ${series.length}`;
+    }
+    if (tables.length) summary.tables = tables;
+    const executed = firstMeta && firstMeta.executedQueryString;
+    if (executed) summary.executedQuery = redactString(executed).slice(0, 2000);
+    if (!series.length && !tables.length) summary.empty = true;
+    return summary;
   }
 
   function deepReplace(value, replace) {
@@ -559,10 +719,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       if (templateSrv) return deepReplace(query, (text) => templateSrv.replace(text));
     } catch (_) {}
     return query;
-  }
-
-  function panelMaxRows(settings) {
-    return Math.max(1, Math.min(100, Number(settings.maxPanelRows) || 20));
   }
 
   function positiveInt(value, fallback, maximum) {
@@ -628,14 +784,45 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     }
   }
 
+  function panelTargets(settings, panel) {
+    return (panel.targets || []).filter((target) => target && !target.hide && isDatasourceAllowed(settings, panel, target));
+  }
+
+  // Короткая запись запроса с подставленными переменными: полные targets уже есть в описании панелей.
+  function compactQuery(query) {
+    const result = { refId: query.refId };
+    ["expr", "query", "rawSql", "url", "queryType"].forEach((key) => {
+      if (typeof query[key] === "string" && query[key]) result[key] = redactString(query[key]).slice(0, 2000);
+    });
+    if (query.datasource && typeof query.datasource === "object") result.datasource = { type: query.datasource.type, uid: query.datasource.uid };
+    return result;
+  }
+
+  async function mapLimit(items, limit, fn) {
+    const results = new Array(items.length);
+    let next = 0;
+    async function worker() {
+      while (next < items.length) {
+        const index = next;
+        next += 1;
+        results[index] = await fn(items[index], index);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return results;
+  }
+
+  // Данные панелей: все выбранные панели с запросами, но не больше maxDataPanels; по maxTargetsPerPanel
+  // запросов на панель; не больше 4 панелей запрашиваются одновременно.
   async function loadPanelData(settings, context, options) {
     options = options || {};
     if (settings.includePanelData === false) return [];
-    const panels = context.panel ? [context.panel] : (context.panels || []).slice(0, 4);
-    const maxRows = panelMaxRows(settings);
-    return Promise.all(panels.map(async (panel) => {
-      const targets = (panel.targets || []).filter((target) => !target.hide && isDatasourceAllowed(settings, panel, target)).slice(0, 4);
-      if (!targets.length) return { panelId: panel.id, title: panel.title, skipped: "Нет запросов или datasource не входит в allowlist" };
+    const all = (context.panel ? [context.panel] : (context.panels || [])).filter((panel) => panelTargets(settings, panel).length);
+    const maxPanels = positiveInt(settings.maxDataPanels, defaults.maxDataPanels, 50);
+    const maxTargets = positiveInt(settings.maxTargetsPerPanel, defaults.maxTargetsPerPanel, 20);
+    const limits = dataLimits(settings);
+    const loaded = await mapLimit(all.slice(0, maxPanels), 4, async (panel) => {
+      const targets = panelTargets(settings, panel).slice(0, maxTargets);
       try {
         const queries = await Promise.all(targets.map((target, index) => interpolateQuery(Object.assign({}, target, {
           refId: target.refId || String.fromCharCode(65 + index),
@@ -644,17 +831,33 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           intervalMs: Number(target.intervalMs) || 60000,
         }))));
         const results = await runDatasourceQueries(context, queries, { timeoutMs: queryTimeoutMs(settings), signal: options.signal });
-        return {
+        const item = {
           panelId: panel.id,
           title: panel.title,
           datasourceUid: datasourceUid(panel, queries[0]),
-          queries: queries.map((query) => sanitizeForAI(query)),
-          results: Object.keys(results).map((refId) => ({ refId, result: summarizeQueryResult(results[refId], maxRows) })),
+          queries: queries.map(compactQuery),
+          results: Object.keys(results).map((refId) => ({ refId, result: summarizeQueryResult(results[refId], limits) })),
         };
+        const skippedTargets = panelTargets(settings, panel).length - targets.length;
+        if (skippedTargets > 0) item.note = `Выполнены первые ${targets.length} запросов панели, ещё ${skippedTargets} пропущено лимитом`;
+        return item;
       } catch (reason) {
+        if (options.signal && options.signal.aborted) throw reason;
         return { panelId: panel.id, title: panel.title, datasourceUid: datasourceUid(panel, targets[0]), error: formatError(reason) };
       }
-    }));
+    });
+    return loaded.concat(all.slice(maxPanels).map((panel) => ({ panelId: panel.id, title: panel.title, skipped: `Данные не запрашивались: лимит ${maxPanels} панелей` })));
+  }
+
+  // Сколько панелей реально получили данные: для честного счётчика в интерфейсе.
+  function panelDataStats(panelData) {
+    const items = Array.isArray(panelData) ? panelData : [];
+    return {
+      total: items.length,
+      loaded: items.filter((item) => !item.error && !item.skipped).length,
+      errors: items.filter((item) => item.error).length,
+      skipped: items.filter((item) => item.skipped).length,
+    };
   }
 
   function contextDatasources(context) {
@@ -692,7 +895,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       datasource: source,
       range: range.clamped ? { from: new Date(range.from).toISOString(), to: new Date(range.to).toISOString(), note: `Диапазон сокращён до ${settings.aiQueryMaxRangeHours} ч лимитом плагина` } : undefined,
       query,
-      results: Object.keys(results).map((refId) => ({ refId, result: summarizeQueryResult(results[refId], panelMaxRows(settings)) })),
+      results: Object.keys(results).map((refId) => ({ refId, result: summarizeQueryResult(results[refId], dataLimits(settings)) })),
     });
   }
 
@@ -746,6 +949,19 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const onUpdate = options.onUpdate || function () {};
     const maxQueries = positiveInt(settings.aiQueryMaxPerTurn, defaults.aiQueryMaxPerTurn, 20);
     let executed = 0;
+    let usage;
+    // Результаты запросов режутся по свободному месту в окне модели, иначе на 8k второй раунд не помещается.
+    function resultBudget(count) {
+      const windowTokens = Number(settings.contextTokens) > 0 ? Number(settings.contextTokens) : 0;
+      if (!windowTokens) return 30000;
+      const reserve = Number(settings.maxTokens) > 0 ? Number(settings.maxTokens) : 1024;
+      const used = estimateTokens(requestBody(settings, contextJson, conversation, { mode }).messages);
+      const free = (windowTokens - reserve - used - 200) * CHARS_PER_TOKEN;
+      return Math.max(1500, Math.min(30000, Math.floor(free / Math.max(1, count))));
+    }
+    function clip(text, limit) {
+      return text.length > limit ? `${text.slice(0, limit)}…[обрезано под окно модели]` : text;
+    }
     async function runQuery(args) {
       if (executed >= maxQueries) throw new Error(`Достигнут лимит ${maxQueries} запросов за один ответ`);
       executed += 1;
@@ -770,10 +986,12 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         }
         throw reason;
       }
+      if (result.usage) usage = { prompt: result.usage.prompt, completion: ((usage && usage.completion) || 0) + result.usage.completion };
       const split = splitThink(result.content);
       const reasoning = [result.reasoning, split.reasoning].filter(Boolean).join("\n");
       if (mode === "native" && !last && result.toolCalls.length) {
         const calls = result.toolCalls.slice(0, 3);
+        const budget = resultBudget(calls.length);
         conversation.push({ role: "assistant", content: result.content || null, tool_calls: calls });
         for (const call of calls) {
           let args;
@@ -786,7 +1004,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
             toolResult = { error: formatError(reason) };
             steps.push(stepSummary(args, undefined, toolResult.error));
           }
-          conversation.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(toolResult).slice(0, 30000) });
+          conversation.push({ role: "tool", tool_call_id: call.id, content: clip(JSON.stringify(toolResult), budget) });
         }
         onUpdate({ content: "", reasoning, steps });
         continue;
@@ -794,6 +1012,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       const textCalls = mode === "text" && !last ? parseTextToolCalls(split.content) : [];
       if (textCalls.length) {
         conversation.push({ role: "assistant", content: split.content });
+        const budget = resultBudget(1);
         const outputs = [];
         for (const call of textCalls) {
           try {
@@ -808,13 +1027,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           }
         }
         const finalHint = round === rounds - 2 || executed >= maxQueries ? "\nЛимит запросов исчерпан: теперь дай итоговый ответ без блоков grafana-query." : "";
-        conversation.push({ role: "user", content: `Результаты запросов grafana-query:\n${JSON.stringify(outputs).slice(0, 30000)}${finalHint}` });
+        conversation.push({ role: "user", content: `Результаты запросов grafana-query:\n${clip(JSON.stringify(outputs), budget)}${finalHint}` });
         onUpdate({ content: "", reasoning, steps });
         continue;
       }
       const content = mode === "text" ? split.content.replace(/```grafana-query[\s\S]*?```/gi, "").trim() : split.content;
       if (!content && !steps.length) throw new Error("Провайдер вернул пустой ответ");
-      return { content: content || "Модель исчерпала лимит запросов и не дала итогового ответа.", reasoning, steps };
+      return { content: content || "Модель исчерпала лимит запросов и не дала итогового ответа.", reasoning, steps, usage };
     }
     throw new Error("Расследование превысило лимит дополнительных запросов");
   }
@@ -957,14 +1176,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   function panelDataNote(context) {
     const data = context && Array.isArray(context.panelData) ? context.panelData : [];
     if (!data.length) return "";
-    const errors = data.filter((item) => item.error || item.skipped).length;
-    return `\n📊 Переданы результаты панелей: ${data.length}${errors ? `, с ошибками: ${errors}` : ""}`;
+    const stats = panelDataStats(data);
+    return `\n📊 Данные панелей: ${stats.loaded} из ${stats.total}${stats.errors ? `, с ошибками: ${stats.errors}` : ""}${stats.skipped ? `, пропущено лимитом: ${stats.skipped}` : ""}`;
   }
 
   const quickPrompts = [
     { label: "Объяснить", prompt: "Объясни назначение выбранной панели или дашборда, запросы и фактические результаты простым техническим языком." },
-    { label: "Исправить запрос", prompt: "Найди ошибки в запросах выбранной панели. Предложи исправленный запрос и dashboard-json для безопасного применения." },
-    { label: "Оптимизировать", prompt: "Проверь запросы выбранной панели на производительность и стоимость. Предложи оптимизированный вариант и dashboard-json." },
+    { label: "Исправить запрос", needsPanel: true, prompt: "Найди ошибки в запросах выбранной панели. Предложи исправленный запрос и dashboard-json для безопасного применения." },
+    { label: "Оптимизировать", needsPanel: true, prompt: "Проверь запросы выбранной панели на производительность и стоимость. Предложи оптимизированный вариант и dashboard-json." },
     { label: "Расследовать", prompt: "Проведи расследование по текущему диапазону времени. Сопоставь фактические результаты панелей, сформируй гипотезы, доказательства, исходные запросы и следующие проверки. Если дополнительные запросы не разрешены, работай только с переданными результатами. Не выдавай гипотезы за факты." },
   ];
 
@@ -1131,12 +1350,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     return context;
   }
 
-  async function contextWithLiveData(settings, context, options) {
-    const next = Object.assign({}, context);
-    next.panelData = await loadPanelData(settings, context, options);
-    return sanitizeForAI(next);
-  }
-
   function availablePanels(context) {
     if (!context) return [];
     return context.panel ? [context.panel] : (context.panels || []);
@@ -1164,28 +1377,42 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     return result;
   }
 
-  function shrinkPanelData(context, rows) {
+  function shrinkResult(result, limits) {
+    if (!result) return result;
+    const next = Object.assign({}, result);
+    if (Array.isArray(result.series)) {
+      let series = result.series;
+      if (limits.series !== undefined && series.length > limits.series) {
+        series = series.slice().sort((a, b) => (Number(b.max) || 0) - (Number(a.max) || 0)).slice(0, limits.series);
+        next.seriesNote = `Показаны ${limits.series} серий с наибольшим max (сокращено под окно модели)`;
+      }
+      next.series = series.map((item) => (limits.recent !== undefined && item.recent ? Object.assign({}, item, { recent: limits.recent ? item.recent.slice(-limits.recent) : undefined }) : item));
+    }
+    if (Array.isArray(result.tables) && limits.rows !== undefined) {
+      next.tables = result.tables.map((table) => Object.assign({}, table, { rows: (table.rows || []).slice(0, limits.rows) }));
+    }
+    return next;
+  }
+
+  function shrinkPanelData(context, limits) {
     if (!Array.isArray(context.panelData)) return context;
     return Object.assign({}, context, {
       panelData: context.panelData.map((item) => Object.assign({}, item, {
-        results: (item.results || []).map((entry) => Object.assign({}, entry, {
-          result: Object.assign({}, entry.result, {
-            frames: ((entry.result && entry.result.frames) || []).map((frame) => Object.assign({}, frame, { rows: (frame.rows || []).slice(0, rows) })),
-          }),
-        })),
+        results: (item.results || []).map((entry) => Object.assign({}, entry, { result: shrinkResult(entry.result, limits) })),
       })),
     });
   }
 
   const contextReducers = [
     { label: "fieldConfig других панелей", apply: (c) => mapPanels(c, (p) => omit(p, ["fieldConfig", "transformations"])) },
-    { label: "строки данных до 5", apply: (c) => shrinkPanelData(c, 5) },
+    { label: "последние точки серий до 2, строки до 5", apply: (c) => shrinkPanelData(c, { recent: 2, rows: 5 }) },
     { label: "fieldConfig выбранной панели", apply: (c) => (c.panel ? Object.assign({}, c, { panel: omit(c.panel, ["fieldConfig"]) }) : c) },
-    { label: "строки данных", apply: (c) => shrinkPanelData(c, 0) },
     { label: "описания панелей", apply: (c) => mapPanels(c, (p) => omit(p, ["description"])) },
     { label: "запросы других панелей", apply: (c) => mapPanels(c, (p) => ({ id: p.id, title: p.title, row: p.row, type: p.type, datasource: p.datasource })) },
-    { label: "результаты панелей", apply: (c) => Object.assign({}, c, { panelData: (c.panelData || []).map((item) => ({ panelId: item.panelId, title: item.title, error: item.error, skipped: item.skipped })) }) },
+    { label: "серии до 3 на запрос, без последних точек и строк", apply: (c) => shrinkPanelData(c, { series: 3, recent: 0, rows: 0 }) },
+    { label: "серии до 1 на запрос", apply: (c) => shrinkPanelData(c, { series: 1 }) },
     { label: "панели только с id и названием", apply: (c) => mapPanels(c, (p) => ({ id: p.id, title: p.title })) },
+    { label: "результаты панелей", apply: (c) => Object.assign({}, c, { panelData: (c.panelData || []).map((item) => ({ panelId: item.panelId, title: item.title, error: item.error, skipped: item.skipped })) }) },
     { label: "панели сверх 60", apply: (c) => (Array.isArray(c.panels) ? Object.assign({}, c, { panels: c.panels.slice(0, 60) }) : c) },
   ];
 
@@ -1216,24 +1443,31 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   }
 
   // Подрезает историю и контекст под contextTokens; резервирует место под ответ.
-  function planRequest(settings, context, history, prompt) {
+  // Контекст укладывается один раз на снимок данных и дальше не меняется (options.fitted), чтобы начало промпта
+  // было одинаковым на уточнениях и локальный сервер переиспользовал уже посчитанный префикс. Под историю
+  // остаётся то, что не занял контекст, но не больше 35% окна.
+  function planRequest(settings, context, history, prompt, options) {
+    options = options || {};
     const windowTokens = Number(settings.contextTokens) > 0 ? Number(settings.contextTokens) : 0;
     const replyReserve = Number(settings.maxTokens) > 0 ? Number(settings.maxTokens) : 1024;
     const fixedTokens = estimateTokens(systemContent(settings, "", settings.toolsMode === "text" ? "text" : "off")) + estimateTokens(prompt) + 50;
+    const contextBudgetTokens = windowTokens ? Math.max(500, windowTokens - replyReserve - fixedTokens - Math.floor(windowTokens * 0.25)) : 40000;
+    const fitted = options.fitted || fitContext(context, contextBudgetTokens * CHARS_PER_TOKEN);
+    const contextTokens = estimateTokens(fitted.json);
     let messages = history.slice();
     if (windowTokens) {
-      const historyBudget = Math.floor(windowTokens * 0.35);
+      const historyBudget = Math.max(0, Math.min(Math.floor(windowTokens * 0.35), windowTokens - replyReserve - fixedTokens - contextTokens));
       while (messages.length && estimateTokens(messages) > historyBudget) messages = messages.slice(2);
+      while (messages.length && messages[0].role !== "user") messages = messages.slice(1);
     }
     const historyTokens = estimateTokens(messages);
-    const contextBudgetTokens = windowTokens ? Math.max(500, windowTokens - replyReserve - fixedTokens - historyTokens) : 40000;
-    const fitted = fitContext(context, contextBudgetTokens * CHARS_PER_TOKEN);
     return {
       messages,
       droppedMessages: history.length - messages.length,
       contextJson: fitted.json,
       reductions: fitted.reductions,
-      totalTokens: fixedTokens + historyTokens + estimateTokens(fitted.json),
+      fitted,
+      totalTokens: fixedTokens + historyTokens + contextTokens,
       windowTokens,
     };
   }
@@ -1364,11 +1598,50 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     } catch (_) {}
   }
 
+  // В модель уходят только завершённые пары; сообщения подряд с одной ролью склеиваются, чтобы модели
+  // со строгим чередованием ролей не отвечали ошибкой.
   function apiHistory(history) {
-    return history.filter((item) => !item.local).map((item) => ({ role: item.role, content: item.content }));
+    const result = [];
+    history.filter((item) => !item.local && !item.failed && typeof item.content === "string").forEach((item) => {
+      const last = result[result.length - 1];
+      if (last && last.role === item.role) last.content = `${last.content}\n\n${item.content}`;
+      else result.push({ role: item.role, content: item.content });
+    });
+    while (result.length && result[0].role !== "user") result.shift();
+    if (result.length && result[result.length - 1].role === "user") result.pop();
+    return result;
   }
 
   // ---------- Чат ----------
+
+  // Текущие диапазон времени и переменные со страницы: пользователь мог поменять их после открытия чата.
+  function withPageState(context) {
+    if (!context) return context;
+    const params = new URLSearchParams(location.search);
+    const timeRange = Object.assign({}, context.timeRange);
+    if (params.get("from")) timeRange.from = params.get("from");
+    if (params.get("to")) timeRange.to = params.get("to");
+    if (params.get("timezone")) timeRange.timezone = params.get("timezone");
+    return Object.assign({}, context, { pageUrl: location.href, timeRange, variables: currentVariables(params) });
+  }
+
+  // Данные панелей снимаются один раз на диалог и переиспользуются, пока не изменились панели, диапазон,
+  // переменные или лимиты; «Обновить данные» сбрасывает снимок.
+  function snapshotKey(context, selectedIds, settings) {
+    return JSON.stringify({
+      panels: (selectedIds || []).map(Number).sort((a, b) => a - b),
+      timeRange: context && context.timeRange,
+      variables: context && context.variables,
+      limits: [settings.includePanelData, settings.maxDataPanels, settings.maxTargetsPerPanel, settings.maxSeriesPerQuery, settings.recentPoints, settings.maxPanelRows, settings.contextTokens],
+    });
+  }
+
+  function stripPendingQueries(content) {
+    const text = String(content || "").replace(/```grafana-query[\s\S]*?```/gi, "");
+    const open = text.search(/```grafana-query/i);
+    const visible = (open >= 0 ? text.slice(0, open) : text).trim();
+    return open >= 0 || visible !== String(content || "").trim() ? `${visible}${visible ? "\n\n" : ""}🔎 Готовлю запрос к datasource…` : visible;
+  }
 
   function Assistant(props) {
     props = props || {};
@@ -1384,6 +1657,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const [allowQueries, setAllowQueries] = React.useState(false);
     const [selectedPanelIds, setSelectedPanelIds] = React.useState([]);
     const [lastRequest, setLastRequest] = React.useState();
+    const [snapshotInfo, setSnapshotInfo] = React.useState();
+    const [retry, setRetry] = React.useState();
+    const snapshotRef = React.useRef(undefined);
     const historyRef = React.useRef(null);
     const rootRef = React.useRef(null);
     const abortRef = React.useRef(null);
@@ -1418,23 +1694,41 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     async function send(promptOverride, action) {
       const prompt = String(promptOverride || input).trim();
       if (!prompt || busy || !settings || !context) return;
+      if (action && action.needsPanel && !context.panel && selectedPanelIds.length !== 1) {
+        setError(`«${action.label}» работает с одной панелью. Откройте список «Передаём панели» и нажмите «Только эта» у нужной панели.`);
+        return;
+      }
       const controller = new AbortController();
       abortRef.current = controller;
       setBusy(true);
       setError("");
+      setRetry(undefined);
+      const started = Date.now();
+      let firstTokenMs;
       let partial = { content: "", reasoning: "", steps: [] };
       let userMessage;
+      let screenshot;
       try {
         assertAllowedRole(settings);
-        const screenshot = includeScreenshot ? await captureDashboardScreenshot(rootRef.current) : undefined;
-        const selectedContext = selectContextPanels(context, selectedPanelIds);
-        const requestContext = await contextWithLiveData(settings, selectedContext, { signal: controller.signal });
+        screenshot = includeScreenshot && settings.screenshotEnabled !== false ? await captureDashboardScreenshot(rootRef.current) : undefined;
+        // Диапазон и переменные берутся в момент отправки, а не при открытии чата.
+        const selectedContext = selectContextPanels(withPageState(context), selectedPanelIds);
+        const key = snapshotKey(selectedContext, selectedPanelIds, settings);
+        let snapshot = snapshotRef.current && snapshotRef.current.key === key ? snapshotRef.current : undefined;
+        if (!snapshot) {
+          const panelData = await loadPanelData(settings, selectedContext, { signal: controller.signal });
+          snapshot = { key, panelData, at: Date.now() };
+          snapshotRef.current = snapshot;
+          setSnapshotInfo({ at: snapshot.at, stats: panelDataStats(panelData) });
+        }
+        const requestContext = sanitizeForAI(Object.assign({}, selectedContext, { panelData: snapshot.panelData, dataSnapshotAt: new Date(snapshot.at).toISOString() }));
         setInput("");
-        const plan = planRequest(settings, requestContext, apiHistory(history), prompt);
+        const plan = planRequest(settings, requestContext, apiHistory(history), prompt, { fitted: snapshot.fitted });
+        snapshot.fitted = plan.fitted;
         userMessage = { role: "user", content: prompt, note: (screenshotNote(screenshot, settings.imageTransport) + panelDataNote(requestContext)).trim() };
         setHistory((current) => current.concat([userMessage]));
         setPending(partial);
-        setLastRequest({
+        const request = {
           contextJson: plan.contextJson,
           reductions: plan.reductions,
           totalTokens: plan.totalTokens,
@@ -1442,17 +1736,21 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           droppedMessages: plan.droppedMessages,
           delivery: resolveContextDelivery(settings),
           panels: availablePanels(selectedContext).map((panel) => ({ id: panel.id, title: panel.title })),
+          data: panelDataStats(snapshot.panelData),
           screenshot: screenshot ? { format: "JPEG", width: screenshot.width, height: screenshot.height, bytes: screenshot.bytes, transport: imageTransportLabels[settings.imageTransport || defaults.imageTransport] } : undefined,
-        });
+        };
+        setLastRequest(request);
         const messages = plan.messages.concat([imageUserMessage(prompt, screenshot, settings.imageTransport)]);
         const result = await runAssistant(settings, requestContext, plan.contextJson, messages, {
           queries: Boolean((action && action.queries) || allowQueries),
           signal: controller.signal,
           onUpdate: (update) => {
+            if (firstTokenMs === undefined && (update.content || update.reasoning)) firstTokenMs = Date.now() - started;
             partial = update;
             setPending(Object.assign({}, update));
           },
         });
+        setLastRequest(Object.assign({}, request, { usage: result.usage, totalMs: Date.now() - started, firstTokenMs: settings.streaming !== false ? firstTokenMs : undefined }));
         setHistory((current) => current.concat([{ role: "assistant", content: result.content, reasoning: result.reasoning, steps: result.steps }]));
       } catch (reason) {
         if (reason && reason.name === "AbortError" && userMessage) {
@@ -1467,7 +1765,12 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
               reasoning: partial.reasoning,
               steps: partial.steps,
             }]));
+          } else if (userMessage) {
+            // Вопрос без ответа не уходит в историю модели; текст возвращается в поле ввода.
+            setHistory((current) => current.map((item) => (item === userMessage ? Object.assign({}, item, { failed: true }) : item)));
+            setInput((current) => current || prompt);
           }
+          setRetry({ prompt, action });
           setError(message);
         }
       } finally {
@@ -1475,6 +1778,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         setPending(undefined);
         setBusy(false);
       }
+    }
+
+    function refreshData() {
+      snapshotRef.current = undefined;
+      setSnapshotInfo(undefined);
     }
 
     function stop() {
@@ -1485,7 +1793,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       if (busy) stop();
       setHistory([]);
       setError("");
+      setRetry(undefined);
       setLastRequest(undefined);
+      refreshData();
     }
 
     function proposalCard(message, index) {
@@ -1521,14 +1831,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
     function messageView(message, index, isPending) {
       if (message.role === "user") {
-        return h("div", { key: index, style: styles.user }, message.content + (message.note ? `\n${message.note}` : ""));
+        return h("div", { key: index, style: Object.assign({}, styles.user, message.failed ? { opacity: 0.6 } : null) }, message.content + (message.note ? `\n${message.note}` : "") + (message.failed ? "\n⚠ Без ответа, в историю модели не попадёт" : ""));
       }
       const content = isPending && !message.content && !(message.steps || []).length && !message.reasoning ? "…" : message.content;
       return h(React.Fragment, { key: index },
         h("div", { style: styles.assistant },
           message.reasoning ? h("details", { style: styles.context }, h("summary", { style: { cursor: "pointer" } }, isPending && !message.content ? "Размышляет…" : "Размышления модели"), h("div", { style: { whiteSpace: "pre-wrap" } }, message.reasoning)) : null,
           (message.steps || []).map((step, stepIndex) => h(StepView, { key: `step-${stepIndex}`, step, context })),
-          isPending ? h("div", { style: { whiteSpace: "pre-wrap" } }, content) : h(MessageContent, { content, context })
+          isPending ? h("div", { style: { whiteSpace: "pre-wrap" } }, stripPendingQueries(content)) : h(MessageContent, { content, context })
         ),
         !isPending ? proposalCard(message, index) : null
       );
@@ -1537,12 +1847,20 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const ready = Boolean(settings && context);
     const panels = availablePanels(context);
     const selectedSet = new Set(selectedPanelIds.map(Number));
+    const withQueries = settings ? panels.filter((panel) => selectedSet.has(Number(panel.id)) && panelTargets(settings, panel).length).length : 0;
+    const maxDataPanels = settings ? positiveInt(settings.maxDataPanels, defaults.maxDataPanels, 50) : defaults.maxDataPanels;
+    const dataLimitNote = settings && settings.includePanelData === false
+      ? " · данные панелей отключены в настройках"
+      : withQueries > maxDataPanels ? ` · данные запросим для первых ${maxDataPanels} из ${withQueries} (лимит в настройках)` : "";
     const statsLine = lastRequest
       ? `Последний запрос ≈${(lastRequest.totalTokens / 1000).toFixed(1)}k ток.${lastRequest.windowTokens ? ` из ${(lastRequest.windowTokens / 1000).toFixed(1)}k` : ""}` +
         (lastRequest.reductions.length ? ` · сжато: ${lastRequest.reductions.join(", ")}` : "") +
         (lastRequest.droppedMessages ? ` · в модель не ушли ранние сообщения: ${lastRequest.droppedMessages}` : "") +
         ` · контекст: ${lastRequest.delivery === "inline" ? "в system prompt" : "grafana-context.json"}` +
         ` · панели: ${lastRequest.panels.length}` +
+        (lastRequest.data && lastRequest.data.total ? ` · данные: ${lastRequest.data.loaded} из ${lastRequest.data.total}` : "") +
+        (lastRequest.usage ? ` · факт: ${lastRequest.usage.prompt} ток. промпта, ${lastRequest.usage.completion} ответа` : "") +
+        (lastRequest.totalMs ? ` · время ${(lastRequest.totalMs / 1000).toFixed(1)} с${lastRequest.firstTokenMs !== undefined ? `, первое слово ${(lastRequest.firstTokenMs / 1000).toFixed(1)} с` : ""}` : "") +
         (lastRequest.screenshot ? ` · снимок: ${lastRequest.screenshot.format} ${lastRequest.screenshot.width}×${lastRequest.screenshot.height}, ${Math.ceil(lastRequest.screenshot.bytes / 1024)} КБ` : "")
       : "";
 
@@ -1563,7 +1881,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           }
         })())
       ) : null,
-      error ? h("div", { style: styles.error, "data-testid": "tech-ai-error" }, error) : null,
+      error ? h("div", { style: styles.error, "data-testid": "tech-ai-error" },
+        error,
+        retry && !busy ? h("div", { style: { marginTop: 8 } }, h("button", { type: "button", style: styles.smallButton, onClick: () => send(retry.prompt, retry.action) }, "Повторить")) : null
+      ) : null,
       h("div", { style: styles.history, ref: historyRef },
         history.length === 0 && !pending ? h("div", { style: styles.context }, "Задайте вопрос по текущему дашборду или панели.") : null,
         history.map((message, index) => messageView(message, index, false)),
@@ -1578,13 +1899,17 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
             h("input", { type: "checkbox", checked: allowQueries, disabled: busy, onChange: (event) => setAllowQueries(event.target.checked) }),
             " Разрешить AI выполнять дополнительные запросы (расширенное расследование)"
           ),
-          h("label", { style: styles.attachment },
+          settings && settings.screenshotEnabled !== false ? h("label", { style: styles.attachment },
             h("input", { type: "checkbox", checked: includeScreenshot, disabled: busy, onChange: (event) => setIncludeScreenshot(event.target.checked) }),
             " Сделать и отправить снимок дашборда для анализа"
-          )
+          ) : null
         ),
+        snapshotInfo ? h("div", { style: Object.assign({}, styles.context, { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }) },
+          `Данные панелей на ${new Date(snapshotInfo.at).toLocaleTimeString()}: ${snapshotInfo.stats.loaded} из ${snapshotInfo.stats.total}${snapshotInfo.stats.skipped ? `, ${snapshotInfo.stats.skipped} пропущено лимитом` : ""}${snapshotInfo.stats.errors ? `, ошибок: ${snapshotInfo.stats.errors}` : ""}. Уточнения используют этот снимок.`,
+          h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: refreshData }, "Обновить данные")
+        ) : null,
         panels.length ? h("details", { style: Object.assign({}, styles.context, { marginBottom: 8 }) },
-          h("summary", { style: { cursor: "pointer" }, "data-testid": "tech-ai-panel-summary" }, `Передаём панели: ${selectedPanelIds.length} из ${panels.length}`),
+          h("summary", { style: { cursor: "pointer" }, "data-testid": "tech-ai-panel-summary" }, `Передаём панели: ${selectedPanelIds.length} из ${panels.length}${dataLimitNote}`),
           h("div", { style: { display: "flex", gap: 6, margin: "6px 0" } },
             h("button", { type: "button", style: styles.smallButton, disabled: busy || selectedPanelIds.length === panels.length, onClick: () => setSelectedPanelIds(panels.map((panel) => Number(panel.id))) }, "Все"),
             h("button", { type: "button", style: styles.smallButton, disabled: busy || !selectedPanelIds.length, onClick: () => setSelectedPanelIds([]) }, "Ни одной")
@@ -1671,6 +1996,23 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       );
     }
 
+    function endpointPreview() {
+      let chat;
+      let list;
+      try {
+        chat = joinEndpoint(state.apiUrl, state.apiPath || defaults.apiPath);
+        list = state.modelsPath ? joinEndpoint(state.apiUrl, state.modelsPath) : null;
+      } catch (reason) {
+        return h("div", { style: styles.context }, `❌ ${reason.message}`);
+      }
+      const typed = String(state.apiUrl || "").trim().replace(/\/+$/, "") + (state.apiPath ? normalizePath(state.apiPath) : "");
+      return h("div", { style: styles.context },
+        h("div", null, `Запросы чата пойдут на: ${chat.url}`),
+        list ? h("div", null, `Список моделей: ${list.url}`) : null,
+        chat.url !== typed ? h("div", null, "Повтор версии в пути (например /v1/v1) будет убран при сохранении.") : null
+      );
+    }
+
     function checkbox(label, key, defaultValue) {
       return h("label", null,
         h("input", { type: "checkbox", checked: state[key] === undefined ? defaultValue : Boolean(state[key]), onChange: (event) => update({ [key]: event.target.checked }) }),
@@ -1687,7 +2029,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     async function save() {
       setStatus("Сохранение…");
       try {
-        const jsonData = Object.assign({}, omit(state, ["_hasApiKey", "_hasGroqApiKey"]), { apiPath: state.provider === "groq" ? state.apiPath : normalizePath(state.apiPath), modelsPath: state.modelsPath ? normalizePath(state.modelsPath) : "" });
+        const jsonData = Object.assign({}, omit(state, ["_hasApiKey", "_hasGroqApiKey"]));
+        if (state.provider !== "groq") {
+          const chat = joinEndpoint(state.apiUrl, state.apiPath || defaults.apiPath);
+          Object.assign(jsonData, { apiUrl: chat.apiUrl, apiPath: chat.path, modelsPath: state.modelsPath ? joinEndpoint(state.apiUrl, state.modelsPath).path : "" });
+        }
         const data = { enabled: true, pinned: true, jsonData };
         if (apiKey || groqApiKey) data.secureJsonData = Object.assign({}, apiKey ? { apiKey } : {}, groqApiKey ? { groqApiKey } : {});
         await grafanaRuntime.getBackendSrv().post(`/api/plugins/${PLUGIN_ID}/settings`, data);
@@ -1789,8 +2135,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           )
         : h(React.Fragment, null,
             field("API URL (как его видит сервер Grafana, например http://ollama:11434)", "apiUrl"),
-            field("Chat completions path", "apiPath"),
+            field("Chat completions path (любой свой путь, например /llm/generate)", "apiPath"),
             field("Models path (для списка моделей)", "modelsPath"),
+            endpointPreview(),
             h("label", { style: styles.field },
               h("span", null, `API key${keyIsSet ? " (уже сохранён)" : ""}`),
               h("input", { style: styles.input, type: "password", value: apiKey, placeholder: keyIsSet ? "Оставьте пустым, чтобы не менять" : "", onChange: (event) => { setApiKey(event.target.value); setDirty(true); } })
@@ -1820,7 +2167,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       field("Max output tokens (0 = provider default)", "maxTokens", "number"),
       field("Reasoning effort (optional)", "reasoningEffort"),
       checkbox("Потоковый вывод ответа (stream)", "streaming", true),
-      h("div", { style: Object.assign({}, styles.field, { padding: 10, border: "1px solid rgba(128,128,128,.35)", borderRadius: 4 }) },
+      checkbox("Разрешить снимок дашборда (если выключено, галка в чате скрыта и захват экрана не запускается)", "screenshotEnabled", true),
+      state.screenshotEnabled === false ? null : h("div", { style: Object.assign({}, styles.field, { padding: 10, border: "1px solid rgba(128,128,128,.35)", borderRadius: 4 }) },
         h("strong", null, "Передача снимков"),
         h("label", { style: styles.field },
           h("span", null, "JSON-схема изображения"),
@@ -1864,7 +2212,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         )
       ),
       checkbox("Выполнять запросы панелей и передавать реальные результаты", "includePanelData", true),
-      field("Максимум строк результата на панель", "maxPanelRows", "number"),
+      field("Данные: максимум панелей за один снимок (1–50)", "maxDataPanels", "number"),
+      field("Данные: максимум запросов на панель (1–20)", "maxTargetsPerPanel", "number"),
+      field("Данные: максимум серий на запрос, остальные отбрасываются по наименьшему max (1–50)", "maxSeriesPerQuery", "number"),
+      field("Данные: последних точек каждой серии к сводке min/max/avg (0–50)", "recentPoints", "number"),
+      field("Данные: максимум строк таблиц и логов на запрос, логи — самые свежие (0–100)", "maxPanelRows", "number"),
       field("Allowlist datasource UID через запятую (пусто = datasource текущего дашборда)", "allowedDatasourceUids"),
       h("label", { style: styles.field },
         h("span", null, "Минимальная роль пользователя (проверяется в браузере; прокси доступен с ролью Viewer)"),
@@ -2084,6 +2436,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
+    __test: { joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
   };
 });

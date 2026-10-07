@@ -363,3 +363,99 @@ test("fitContext при сильном сжатии сохраняет назв�
   assert.ok(fitted.reductions.includes("панели только с id и названием"));
   assert.ok(!fitted.reductions.includes("панели сверх 60"));
 });
+
+test("joinEndpoint убирает повтор /v1 между API URL и путём и не трогает свои пути", () => {
+  assert.equal(t.joinEndpoint("http://host/llm/v1", "/v1/chat/completions").url, "http://host/llm/v1/chat/completions");
+  assert.equal(t.joinEndpoint("http://host/llm/v1/", "/v1/models").path, "/models");
+  assert.equal(t.joinEndpoint("https://g.com/v1beta/openai", "/v1beta/openai/chat/completions").path, "/chat/completions");
+  assert.equal(t.joinEndpoint("http://ollama:11434", "/v1/chat/completions").url, "http://ollama:11434/v1/chat/completions");
+  assert.equal(t.joinEndpoint("http://host/llm", "llm/generate").url, "http://host/llm/llm/generate");
+  assert.equal(t.joinEndpoint("http://host/v1", "/v1").path, "/v1");
+  assert.throws(() => t.joinEndpoint("http://host", "/../x"));
+});
+
+function rawSeries(labels, values, start) {
+  const times = values.map((_, index) => (start || Date.parse("2026-10-05T10:00:00Z")) + index * 60000);
+  return { schema: { refId: "A", fields: [{ name: "Time", type: "time" }, { name: "Value", type: "number", labels }] }, data: { values: [times, values] } };
+}
+
+test("summarizeQueryResult отдаёт сводку серии с пиком и последними точками, а не первые строки", () => {
+  const values = Array.from({ length: 100 }, (_, index) => (index === 97 ? 50 : 1));
+  const summary = t.summarizeQueryResult({ status: 200, frames: [rawSeries({ pod: "api-1" }, values)] }, { rows: 20, recent: 3, series: 10 });
+  const series = summary.series[0];
+  assert.equal(series.name, "pod=api-1");
+  assert.equal(series.max, 50);
+  assert.equal(series.maxAt, "10-05 11:37");
+  assert.equal(series.last, 1);
+  assert.deepEqual(series.recent.map((point) => point[1]), [50, 1, 1]);
+  assert.equal(summary.dataRange.to, "2026-10-05T11:39Z");
+});
+
+test("summarizeQueryResult оставляет серии с наибольшим max и пишет, сколько отброшено", () => {
+  const frames = Array.from({ length: 12 }, (_, index) => rawSeries({ pod: `p${index}` }, [index, index * 2]));
+  const summary = t.summarizeQueryResult({ status: 200, frames }, { rows: 5, recent: 0, series: 3 });
+  assert.deepEqual(summary.series.map((item) => item.name), ["pod=p11", "pod=p10", "pod=p9"]);
+  assert.match(summary.seriesNote, /3 серий .* из 12/);
+});
+
+test("summarizeQueryResult для логов отдаёт самые свежие строки, для таблиц — строки массивами", () => {
+  const logs = { schema: { fields: [{ name: "Time", type: "time" }, { name: "Line", type: "string" }] }, data: { values: [[1, 3, 2], ["old", "newest", "mid"]] } };
+  const table = { schema: { fields: [{ name: "name", type: "string" }, { name: "logins", type: "number" }] }, data: { values: [["alice", "bob"], [42, 17]] } };
+  const summary = t.summarizeQueryResult({ status: 200, frames: [logs, table] }, { rows: 2, recent: 0, series: 5 });
+  assert.deepEqual(summary.tables[0].rows.map((row) => row[1]), ["newest", "mid"]);
+  assert.deepEqual(summary.tables[1].rows, [["alice", 42], ["bob", 17]]);
+  assert.equal(t.summarizeQueryResult({ status: 200, frames: [] }).empty, true);
+});
+
+test("apiHistory не отправляет вопрос без ответа и склеивает сообщения подряд с одной ролью", () => {
+  const history = [
+    { role: "user", content: "первый", failed: true },
+    { role: "user", content: "второй" },
+    { role: "assistant", content: "ответ" },
+    { role: "assistant", content: "✅ применено", local: true },
+    { role: "user", content: "третий" },
+    { role: "user", content: "четвёртый" },
+    { role: "assistant", content: "ответ 2" },
+    { role: "user", content: "висящий" },
+  ];
+  assert.deepEqual(t.apiHistory(history).map((item) => `${item.role}:${item.content}`), ["user:второй", "assistant:ответ", "user:третий\n\nчетвёртый", "assistant:ответ 2"]);
+});
+
+test("loadPanelData запрашивает все выбранные панели в пределах maxDataPanels и честно помечает остальные", async () => {
+  const calls = [];
+  const original = global.fetch;
+  global.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body.queries.length);
+    const results = {};
+    body.queries.forEach((query) => { results[query.refId] = { status: 200, frames: [rawSeries({}, [1, 2])] }; });
+    return { ok: true, status: 200, text: async () => JSON.stringify({ results }) };
+  };
+  try {
+    const panels = Array.from({ length: 7 }, (_, index) => ({ id: index + 1, title: `P${index + 1}`, datasource: { type: "prometheus", uid: "prom" }, targets: Array.from({ length: 3 }, (__, ref) => ({ refId: "ABC"[ref], expr: "up" })) }));
+    panels.push({ id: 99, title: "Текст", type: "text" });
+    const data = await t.loadPanelData(Object.assign({}, t.defaults, { maxDataPanels: 5, maxTargetsPerPanel: 2 }), { timeRange: { from: "now-1h", to: "now" }, panels });
+    const stats = t.panelDataStats(data);
+    assert.deepEqual(stats, { total: 7, loaded: 5, errors: 0, skipped: 2 });
+    assert.deepEqual(calls, [2, 2, 2, 2, 2]);
+    assert.match(data[0].note, /ещё 1 пропущено/);
+    assert.match(data[6].skipped, /лимит 5 панелей/);
+  } finally {
+    global.fetch = original;
+  }
+});
+
+test("planRequest с готовым контекстом снимка не меняет contextJson на уточнениях", () => {
+  const settings = Object.assign({}, t.defaults, { contextTokens: 8192 });
+  const context = { dashboardTitle: "D", panels: [{ id: 1, title: "A" }] };
+  const first = t.planRequest(settings, context, [], "вопрос");
+  const history = [{ role: "user", content: "вопрос" }, { role: "assistant", content: "x".repeat(3000) }];
+  const second = t.planRequest(settings, context, history, "уточнение", { fitted: first.fitted });
+  assert.equal(second.contextJson, first.contextJson);
+  assert.equal(second.messages.length, 2);
+});
+
+test("stripPendingQueries прячет блоки grafana-query, в том числе недописанный", () => {
+  assert.equal(t.stripPendingQueries("Проверю.\n```grafana-query\n{\"datasourceUid\""), "Проверю.\n\n🔎 Готовлю запрос к datasource…");
+  assert.equal(t.stripPendingQueries("Обычный ответ"), "Обычный ответ");
+});

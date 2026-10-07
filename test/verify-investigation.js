@@ -43,7 +43,7 @@ const puppeteer = require('puppeteer');
     await page.screenshot({ path: '/test/investigation-success.png', fullPage: false });
     const error = await page.$eval('#tech-ai-assistant-drawer [data-testid="tech-ai-error"]', (node) => node.textContent).catch(() => '');
     if (error) throw new Error(`Investigation request failed: ${error}`);
-    if (!text.includes('Переданы результаты панелей: 3')) throw new Error('Investigation did not include live panel data');
+    if (!/Данные панелей: \d+ из 3/.test(text)) throw new Error('Investigation did not include live panel data');
     console.log(text);
   } finally {
     await page.evaluate(async (jsonData) => {
