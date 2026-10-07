@@ -34,9 +34,9 @@ const puppeteer = require('puppeteer');
   await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true, timeout: 30000 });
   await page.click('#tech-ai-assistant-launcher');
   await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
+  await page.click('[data-testid="tech-ai-tab-context"]');
   const initial = await page.$eval('[data-testid="tech-ai-panel-summary"]', (node) => node.textContent);
   if (!/^Передаём панели: \d+ из \d+$/.test(initial)) throw new Error(`Panel summary missing: ${initial}`);
-  await page.click('[data-testid="tech-ai-panel-summary"]');
   const selectedTitle = await page.evaluate(() => {
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
     const buttons = [...drawer.querySelectorAll('button')].filter((button) => button.textContent.trim() === 'Только эта');
@@ -64,6 +64,7 @@ const puppeteer = require('puppeteer');
   const context = JSON.parse(match[1]);
   if (!Array.isArray(context.panels) || context.panels.length !== 1) throw new Error(`Expected one panel, got ${context.panels && context.panels.length}`);
   if (Array.isArray(context.panelData) && context.panelData.some((item) => Number(item.panelId) !== Number(context.panels[0].id))) throw new Error('Unselected panel data was sent');
+  await page.click('[data-testid="tech-ai-tab-context"]');
   const summary = await page.$eval('[data-testid="tech-ai-panel-summary"]', (node) => node.textContent);
   if (!summary.includes('1 из')) throw new Error(`Selection was not reflected: ${summary}`);
   console.log(`panel-selection-test=ok; selected=${selectedTitle}; panelId=${context.panels[0].id}`);

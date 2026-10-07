@@ -35,9 +35,8 @@ const puppeteer = require('puppeteer');
   await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true, timeout: 30000 });
   await page.click('#tech-ai-assistant-launcher');
   await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
-  const controlsCollapsed = await page.$eval('[data-testid="tech-ai-context-controls"]', (node) => !node.open);
-  if (!controlsCollapsed) throw new Error('Actions/context section must be collapsed by default');
-  await page.$eval('[data-testid="tech-ai-context-controls"]', (node) => { node.open = true; });
+  const chatTabActive = await page.$eval('[data-testid="tech-ai-tab-chat"]', (node) => node.getAttribute('aria-selected') === 'true');
+  if (!chatTabActive) throw new Error('Chat tab must be active by default');
   await page.evaluate(() => {
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
     [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Объяснить').click();
@@ -45,8 +44,8 @@ const puppeteer = require('puppeteer');
   await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true, timeout: 10000 });
   await page.click('[data-testid="tech-ai-send-preview"] button');
   await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('Применить к дашборду'), { timeout: 60000 });
+  await page.click('[data-testid="tech-ai-tab-diag"]');
   await page.evaluate(() => {
-    document.querySelector('[data-testid="tech-ai-context-controls"]').open = false;
     const details = [...document.querySelectorAll('#tech-ai-assistant-drawer details')].find((item) => item.querySelector('summary')?.textContent.includes('Последний отправленный контекст'));
     details.open = true;
   });
@@ -58,6 +57,8 @@ const puppeteer = require('puppeteer');
   if (drawerLayout.drawerLeft < 0 || drawerLayout.drawerRight > drawerLayout.viewport || drawerLayout.drawerWidth > drawerLayout.viewport || drawerLayout.closeLeft < 0 || drawerLayout.closeRight > drawerLayout.viewport) {
     throw new Error(`Drawer escaped viewport: ${JSON.stringify(drawerLayout)}`);
   }
+  await page.click('[data-testid="tech-ai-tab-chat"]');
+  await page.waitForSelector('[data-testid="tech-ai-history"]', { visible: true, timeout: 10000 });
   const scrolling = await page.$eval('[data-testid="tech-ai-history"]', (node) => {
     const before = node.scrollTop;
     node.scrollTop = 0;

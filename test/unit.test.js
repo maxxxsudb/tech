@@ -263,8 +263,13 @@ test("drawer ограничивает длинный ответ шириной v
   assert.equal(t.styles.root.minWidth, 0);
   assert.equal(t.styles.history.overflowX, "hidden");
   assert.equal(t.styles.history.overflowY, "auto");
-  assert.equal(t.styles.controls.overflow, "hidden");
-  assert.equal(t.styles.contextControls.overflowY, "auto");
+  assert.equal(t.styles.tabBody.overflowY, "auto");
+  assert.equal(t.styles.tabBody.minHeight, 0);
+  assert.equal(t.styles.notices.overflowY, "auto");
+  assert.equal(t.styles.notices.minHeight, 0);
+  assert.equal(t.styles.user.flexShrink, 0);
+  assert.equal(t.styles.assistant.flexShrink, 0);
+  assert.match(t.drawerScopedCss, /tech-ai-history\\?"\] > \* \{ flex-shrink: 0; \}/);
   assert.equal(t.styles.assistant.maxWidth, "100%");
   assert.equal(t.styles.pre.maxWidth, "100%");
   assert.match(t.drawerScopedCss, /markdown-html table/);
@@ -568,4 +573,18 @@ test("пример для «Объяснить» ограничивает стр
   } finally {
     global.fetch = original;
   }
+});
+
+test("выбор панелей переживает пересоздание drawer", () => {
+  const store = {};
+  global.sessionStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } };
+  const context = { panels: [{ id: 1, title: "a" }, { id: 2, title: "b" }, { id: 3, title: "c" }] };
+  assert.deepEqual(t.loadPanelSelection("k", context), [1, 2, 3]);
+  t.savePanelSelection("k", [2]);
+  assert.deepEqual(t.loadPanelSelection("k", context), [2]);
+  t.savePanelSelection("k", []);
+  assert.deepEqual(t.loadPanelSelection("k", context), []);
+  t.savePanelSelection("k", [99]);
+  assert.deepEqual(t.loadPanelSelection("k", context), [1, 2, 3]);
+  delete global.sessionStorage;
 });
