@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.7.6";
+  const PLUGIN_VERSION = "0.7.7";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -156,6 +156,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     tabActive: { flex: "0 0 auto", padding: "8px 12px", cursor: "pointer", border: "none", borderBottom: "2px solid #5794f2", background: "transparent", color: "inherit", fontSize: 13, fontWeight: 600 },
     tabBody: { flex: "1 1 0", minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", display: "flex", flexDirection: "column", gap: 12, padding: "8px 4px" },
     footer: { flex: "0 0 auto", display: "flex", flexDirection: "column", gap: 8, paddingTop: 10, borderTop: "1px solid rgba(128,128,128,.22)" },
+    actionsPanel: { flex: "0 0 auto", padding: "2px 0", color: "var(--text-secondary, #999)", fontSize: 12 },
     // Подтверждение отправки стоит прямо над полем ввода, чтобы его нельзя было не заметить.
     confirm: { display: "grid", gap: 6, padding: 10, border: "1px solid #5794f2", borderRadius: 8, background: "rgba(87,148,242,.12)", fontSize: 12 },
     primaryButton: { minHeight: 34, padding: "0 16px", cursor: "pointer", borderRadius: 6, border: "1px solid #3d71d9", background: "#3d71d9", color: "white", fontWeight: 600 },
@@ -1937,6 +1938,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       const prompt = String(promptOverride || input).trim();
       if (!prompt || busy || !settings || !context) return;
       if (action && action.needsPanel && !context.panel && selectedPanelIds.length !== 1) {
+        setTab("chat");
         setError(`«${action.label}» работает с одной панелью. На вкладке «Контекст» нажмите «Только эта» у нужной панели.`);
         return;
       }
@@ -1970,6 +1972,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
     function openInvestigation(action) {
       setSendPreview(undefined);
+      setTab("chat");
       setInvestigationSetup({
         action,
         rangeHours: 1,
@@ -2000,6 +2003,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       const prompt = String(promptOverride || input).trim();
       if (!prompt || busy || !settings || !context) return;
       if (action && action.needsPanel && !context.panel && selectedPanelIds.length !== 1) {
+        setTab("chat");
         setError(`«${action.label}» работает с одной панелью. На вкладке «Контекст» нажмите «Только эта» у нужной панели.`);
         return;
       }
@@ -2319,12 +2323,17 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         ) : null
       ) : null,
       h("div", { style: styles.footer },
-        h("div", { style: styles.actionBar }, quickPrompts.map((action) =>
-          h("button", { key: action.label, type: "button", style: Object.assign({}, styles.button, { flex: "1 1 auto" }), disabled: busy || !ready, onClick: () => action.investigation ? openInvestigation(action) : prepareSend(action.prompt, action) }, action.label)
-        )),
-        history.length || busy ? h("div", { style: { display: "flex", justifyContent: "flex-end" } },
-          h("button", { type: "button", style: styles.linkButton, onClick: newDialog }, "Новый диалог")
-        ) : null,
+        h("details", { style: styles.actionsPanel, "data-testid": "tech-ai-actions-panel" },
+          h("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "Действия"),
+          h("div", { style: { paddingTop: 8 } },
+            h("div", { style: styles.actionBar }, quickPrompts.map((action) =>
+              h("button", { key: action.label, type: "button", style: Object.assign({}, styles.button, { flex: "1 1 auto" }), disabled: busy || !ready, onClick: () => action.investigation ? openInvestigation(action) : prepareSend(action.prompt, action) }, action.label)
+            )),
+            history.length || busy ? h("div", { style: { display: "flex", justifyContent: "flex-end" } },
+              h("button", { type: "button", style: styles.linkButton, onClick: newDialog }, "Новый диалог")
+            ) : null
+          )
+        ),
         sendPreview ? h("div", { style: styles.confirm, "data-testid": "tech-ai-send-preview" },
           h("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } },
             h("strong", { style: { marginRight: "auto", fontSize: 13 } }, "Проверьте и отправьте"),

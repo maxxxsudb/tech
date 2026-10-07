@@ -4,9 +4,11 @@ const puppeteer = require('puppeteer');
   const browser = await puppeteer.launch({
     executablePath: '/usr/bin/chromium',
     headless: true,
+    timeout: 60000,
     args: ['--no-sandbox', '--disable-dev-shm-usage'],
   });
   const page = await browser.newPage();
+  page.setDefaultNavigationTimeout(60000);
   await page.setViewport({ width: 1600, height: 1000 });
   await page.setRequestInterception(true);
   page.on('request', (request) => {
@@ -37,6 +39,9 @@ const puppeteer = require('puppeteer');
   await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
   const chatTabActive = await page.$eval('[data-testid="tech-ai-tab-chat"]', (node) => node.getAttribute('aria-selected') === 'true');
   if (!chatTabActive) throw new Error('Chat tab must be active by default');
+  const actionsCollapsed = await page.$eval('[data-testid="tech-ai-actions-panel"]', (node) => !node.open);
+  if (!actionsCollapsed) throw new Error('Actions must be collapsed by default');
+  await page.$eval('[data-testid="tech-ai-actions-panel"]', (node) => { node.open = true; });
   await page.evaluate(() => {
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
     [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Объяснить').click();

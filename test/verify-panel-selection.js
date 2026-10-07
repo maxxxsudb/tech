@@ -4,9 +4,11 @@ const puppeteer = require('puppeteer');
   const browser = await puppeteer.launch({
     executablePath: '/usr/bin/chromium',
     headless: true,
+    timeout: 60000,
     args: ['--no-sandbox', '--disable-dev-shm-usage'],
   });
   const page = await browser.newPage();
+  page.setDefaultNavigationTimeout(60000);
   await page.setViewport({ width: 1600, height: 1000 });
   let chatBody;
   await page.setRequestInterception(true);

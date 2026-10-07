@@ -4,9 +4,11 @@ const puppeteer = require('puppeteer');
   const browser = await puppeteer.launch({
     executablePath: '/usr/bin/chromium',
     headless: true,
+    timeout: 60000,
     args: ['--no-sandbox', '--disable-dev-shm-usage'],
   });
   const page = await browser.newPage();
+  page.setDefaultNavigationTimeout(60000);
   await page.setViewport({ width: 1600, height: 1000 });
   await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/login', { waitUntil: 'domcontentloaded' });
   const originalPluginSettings = await page.evaluate(async () => {
@@ -31,6 +33,7 @@ const puppeteer = require('puppeteer');
     await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true, timeout: 30000 });
     await page.click('#tech-ai-assistant-launcher');
     await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
+  await page.$eval('[data-testid="tech-ai-actions-panel"]', (node) => { node.open = true; });
     await page.evaluate(() => {
       const drawer = document.querySelector('#tech-ai-assistant-drawer');
       [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Расследовать').click();
