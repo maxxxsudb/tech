@@ -1907,6 +1907,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const [attachments, setAttachments] = React.useState([]);
     const [readingFiles, setReadingFiles] = React.useState(false);
     const [editTurn, setEditTurn] = React.useState();
+    const [followLatest, setFollowLatest] = React.useState(true);
     const [investigationSetup, setInvestigationSetup] = React.useState();
     const [dataProgress, setDataProgress] = React.useState();
     const [selectedPanelIds, setSelectedPanelIds] = React.useState([]);
@@ -1922,6 +1923,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const abortRef = React.useRef(null);
     const fileRef = React.useRef(null);
     const readingRef = React.useRef(false);
+    const followRef = React.useRef(true);
+    const composerRef = React.useRef(null);
 
     React.useEffect(() => {
       let cancelled = false;
@@ -1935,6 +1938,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           setSelectedPanelIds(loadPanelSelection(key, nextContext));
           setStorageKey(key);
           setHistory(loadHistory(key));
+          try { setInput(props.initialPrompt || sessionStorage.getItem(`${key}:draft`) || ""); } catch (_) {}
         })
         .catch((reason) => setError(`Не удалось загрузить настройки или контекст: ${formatError(reason)}`));
       return () => {
@@ -1952,8 +1956,22 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     }, [selectedPanelIds, storageKey]);
 
     React.useEffect(() => {
-      if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
+      if (historyRef.current && followRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
     }, [history, pending, tab]);
+
+    React.useEffect(() => {
+      if (storageKey) { try { sessionStorage.setItem(`${storageKey}:draft`, input); } catch (_) {} }
+      if (composerRef.current) {
+        composerRef.current.style.height = "auto";
+        composerRef.current.style.height = `${Math.min(128, Math.max(64, composerRef.current.scrollHeight))}px`;
+      }
+    }, [input, storageKey, context]);
+
+    function jumpToLatest() {
+      followRef.current = true;
+      setFollowLatest(true);
+      if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
+    }
 
     function samplePlanFor(action) {
       const sampleRows = Math.max(0, Math.min(20, Math.floor(Number(settings && settings.explainSampleRows) || 0)));
@@ -2151,6 +2169,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       const controller = new AbortController();
       abortRef.current = controller;
       setBusy(true);
+      jumpToLatest();
       setSendPreview(undefined);
       setTab("chat");
       setError("");
@@ -2290,6 +2309,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       setEditTurn(undefined);
       setSendPreview(undefined);
       clearData();
+      jumpToLatest();
     }
 
     function proposalCard(message, index) {
@@ -2407,10 +2427,18 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       ) : null
       ) : null,
       // Пока открыты параметры расследования, они занимают место истории, а не наезжают на неё.
-      tab === "chat" && !setupOpen ? h("div", { style: styles.history, ref: historyRef, "data-testid": "tech-ai-history" },
+      tab === "chat" && !setupOpen ? h("div", { style: { flex: "1 1 0", minHeight: 0, position: "relative" } },
+      h("div", { style: Object.assign({}, styles.history, { height: "100%" }), ref: historyRef, "data-testid": "tech-ai-history", onScroll: (event) => {
+        const node = event.currentTarget;
+        const near = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+        followRef.current = near;
+        setFollowLatest(near);
+      } },
         history.length === 0 && !pending ? h("div", { style: styles.context }, "Задайте вопрос по текущему дашборду или панели.") : null,
         history.map((message, index) => messageView(message, index, false)),
         pending ? messageView(Object.assign({ role: "assistant" }, pending), "pending", true) : null
+      ),
+      !followLatest ? h("button", { type: "button", style: Object.assign({}, styles.smallButton, { position: "absolute", right: 12, bottom: 8, background: themeColors().background, boxShadow: "0 2px 12px rgba(0,0,0,.2)" }), onClick: jumpToLatest, "data-testid": "tech-ai-latest" }, "↓ К последнему сообщению") : null
       ) : null,
       tab === "context" ? h("div", { style: styles.tabBody, "data-testid": "tech-ai-context-tab" },
         sendPreview ? h("div", { style: styles.proposal },
@@ -2478,10 +2506,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         h("div", { style: { display: "flex", flexDirection: "column", gap: 8, flex: "1 1 auto", minHeight: 0, overflowY: "auto", overscrollBehavior: "contain" }, "data-testid": "tech-ai-controls" },
         h("details", { style: styles.actionsPanel, "data-testid": "tech-ai-actions-panel" },
           h("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "Действия"),
-          h("div", { style: { paddingTop: 8, maxHeight: 130, overflowY: "auto" } },
-            h("div", { style: styles.actionBar }, quickPrompts.map((action) =>
-              h("button", { key: action.label, type: "button", style: Object.assign({}, styles.button, { flex: "1 1 auto" }), disabled: busy || !ready, onClick: () => action.investigation ? openInvestigation(action) : prepareSend(action.prompt, action) }, action.label)
+          h("div", { style: { paddingTop: 8, maxHeight: 150, overflowY: "auto" } },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6, marginBottom: 8 } }, quickPrompts.slice(0, 4).map((action) =>
+              h("button", { key: action.label, type: "button", style: styles.button, disabled: busy || !ready, onClick: () => action.investigation ? openInvestigation(action) : prepareSend(action.prompt, action) }, action.label)
             )),
+            h("details", { style: Object.assign({}, styles.context, { marginBottom: 8 }), "data-testid": "tech-ai-more-actions" },
+              h("summary", { style: { cursor: "pointer", padding: "4px 0" } }, "Другие сценарии"),
+              h("div", { style: { display: "grid", gap: 4, paddingTop: 6 } }, quickPrompts.slice(4).map((action) => h("button", { key: action.label, type: "button", style: Object.assign({}, styles.smallButton, { textAlign: "left", border: "none", background: "rgba(128,128,128,.06)", minHeight: 32 }), disabled: busy || !ready, onClick: () => action.investigation ? openInvestigation(action) : prepareSend(action.prompt, action) }, action.label)))
+            ),
             history.length || busy ? h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" } },
               h("button", { type: "button", style: styles.linkButton, disabled: busy, onClick: () => exportDialog(false) }, "Копировать диалог"),
               h("button", { type: "button", style: styles.linkButton, disabled: busy, onClick: () => exportDialog(true), "data-testid": "tech-ai-export" }, "Экспорт Markdown"),
@@ -2515,8 +2547,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         editTurn ? h("div", { style: styles.context }, "Редактирование вопроса: следующие сообщения будут заменены после отправки. ", h("button", { type: "button", style: styles.linkButton, onClick: () => { setEditTurn(undefined); setInput(""); setSendPreview(undefined); } }, "Отменить")) : null,
         h("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12 } },
           h("input", { ref: fileRef, type: "file", multiple: true, accept: ".png,.jpg,.jpeg,.log,.txt,.json,.md", style: { display: "none" }, "data-testid": "tech-ai-file-input", onChange: (event) => { addFiles(event.target.files); event.target.value = ""; } }),
-          h("button", { type: "button", style: styles.smallButton, disabled: busy || readingFiles, onClick: () => fileRef.current.click() }, readingFiles ? "Читаем файлы…" : "Прикрепить файл"),
-          h("span", { style: styles.context }, "PNG/JPEG, LOG/TXT/JSON/MD · можно вставить или перетащить")
+          h("button", { type: "button", style: styles.smallButton, title: "PNG/JPEG, LOG/TXT/JSON/MD. Можно вставить из буфера или перетащить в чат.", disabled: busy || readingFiles, onClick: () => fileRef.current.click() }, readingFiles ? "Читаем файлы…" : "+ Файл"),
+          h("span", { style: Object.assign({}, styles.context, { marginLeft: "auto" }) }, "Enter — отправить · Shift+Enter — строка")
         ),
         attachments.length ? h("div", { style: { display: "flex", gap: 6, maxHeight: 70, overflowY: "auto", flexWrap: "wrap" }, "data-testid": "tech-ai-attachments" }, attachments.map((item) => h("div", { key: item.id, style: { display: "flex", gap: 6, alignItems: "center", padding: 4, border: "1px solid rgba(128,128,128,.3)", borderRadius: 6, minWidth: 0, fontSize: 12 } },
           item.kind === "image" ? h("img", { src: item.dataUrl, alt: item.name, style: { width: 40, height: 32, objectFit: "contain" } }) : null,
@@ -2526,6 +2558,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         ),
         h("div", { style: styles.composer },
           h("textarea", {
+            ref: composerRef,
             style: styles.textarea,
             value: input,
             disabled: busy || !ready || readingFiles,
@@ -2914,7 +2947,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       top: "0",
       right: "0",
       zIndex: "2147483001",
-      width: "min(560px, 100vw)",
+      width: "min(640px, 100vw)",
       maxWidth: "100vw",
       height: "100vh",
       maxHeight: "100vh",
@@ -2942,13 +2975,32 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     });
     header.appendChild(document.createTextNode(COMPONENT_TITLE));
 
+    const headerActions = document.createElement("div");
+    Object.assign(headerActions.style, { display: "flex", alignItems: "center", gap: "8px", flex: "0 0 auto" });
+    const expand = document.createElement("button");
+    expand.type = "button";
+    expand.textContent = "⤢";
+    expand.title = "Развернуть панель";
+    expand.setAttribute("aria-label", expand.title);
+    expand.setAttribute("data-testid", "tech-ai-expand");
+    Object.assign(expand.style, { border: "0", background: "transparent", color: "inherit", fontSize: "24px", width: "32px", height: "36px", cursor: "pointer" });
+    let expanded = false;
+    expand.addEventListener("click", () => {
+      expanded = !expanded;
+      drawer.style.width = expanded ? "100vw" : "min(640px, 100vw)";
+      expand.title = expanded ? "Вернуть обычный размер" : "Развернуть панель";
+      expand.setAttribute("aria-label", expand.title);
+    });
+    headerActions.appendChild(expand);
+
     const close = document.createElement("button");
     close.type = "button";
     close.textContent = "×";
     close.title = "Закрыть (Esc)";
     Object.assign(close.style, { flex: "0 0 auto", border: "0", background: "transparent", color: "inherit", fontSize: "28px", lineHeight: "36px", cursor: "pointer" });
     close.addEventListener("click", closeDrawer);
-    header.appendChild(close);
+    headerActions.appendChild(close);
+    header.appendChild(headerActions);
 
     const content = document.createElement("div");
     content.id = "tech-ai-assistant-drawer-content";
