@@ -14,12 +14,29 @@
   });
   let nextId = 0;
 
+  // Текстовые форматы, которые читаются как есть; любой другой небинарный файл тоже преобразуется в текст.
+  const textExtensions = /\.(log|txt|json|md|csv|tsv|ya?ml|xml|sql|conf|cfg|ini|toml|properties|env|html?|js|ts|py|sh|ps1|go|java|promql|logql)$/i;
+
   function kindOf(file) {
     const name = String(file.name || "");
     const mime = String(file.type || "").toLowerCase();
     if (/\.(png|jpe?g)$/i.test(name) || /^(image\/png|image\/jpeg)$/.test(mime)) return "image";
-    if (/\.(log|txt|json|md)$/i.test(name)) return "text";
-    throw new Error("Поддерживаются PNG, JPEG, .log, .txt, .json и .md.");
+    if (/^image\//.test(mime) || /\.(gif|bmp|webp|svg|ico|tiff?)$/i.test(name)) throw new Error("Из изображений поддерживаются PNG и JPEG.");
+    if (/\.(pdf|docx?|xlsx?|pptx?|odt|ods|zip|gz|tgz|7z|rar|exe|dll|bin|jar)$/i.test(name)) throw new Error(binaryMessage(name));
+    return "text";
+  }
+
+  function binaryMessage(name) {
+    return "Файл «" + name + "» двоичный, его нельзя преобразовать в текст. Поддерживаются PNG/JPEG и текстовые файлы (LOG, TXT, JSON, MD, CSV, YAML и т. п.); PDF или DOCX сохраните как текст.";
+  }
+
+  // Двоичный файл (архив, PDF, DOCX) нельзя честно передать текстом: в нём нулевые байты или «битые» символы.
+  function looksBinary(text) {
+    const sample = String(text || "").slice(0, 8192);
+    if (!sample.length) return false;
+    if (sample.indexOf("\u0000") >= 0) return true;
+    const broken = (sample.match(/\uFFFD/g) || []).length;
+    return broken / sample.length > 0.02;
   }
 
   function readFile(file, asDataUrl) {
@@ -107,24 +124,33 @@
       bytes: file.size,
       originalBytes: file.size,
     };
-    if (kind === "text") attachment.content = await readFile(file, false);
-    else Object.assign(attachment, await prepareImage(await readFile(file, true)));
+    if (kind === "text") {
+      attachment.content = await readFile(file, false);
+      if (looksBinary(attachment.content)) {
+        throw new Error(binaryMessage(attachment.name));
+      }
+      attachment.asText = true;
+    } else {
+      Object.assign(attachment, await prepareImage(await readFile(file, true)));
+      attachment.asText = false;
+    }
     return attachment;
   }
 
   function composeText(attachments) {
-    return (attachments || []).filter((item) => item.kind === "text").map((item) => {
-      const content = String(item.content || "");
+    return (attachments || []).filter((item) => item.kind === "text" || (item.kind === "image" && item.asText && item.transcript)).map((item) => {
+      const content = String(item.kind === "image" ? item.transcript : item.content || "");
       const runs = content.match(/`+/g) || [];
       const fence = "`".repeat(Math.max(3, ...runs.map((run) => run.length + 1)));
-      return "### Вложение: " + String(item.name || "attachment.txt").replace(/[\r\n]/g, " ") + "\n" + fence + "text\n" + content + "\n" + fence;
+      const title = String(item.name || "attachment.txt").replace(/[\r\n]/g, " ") + (item.kind === "image" ? " (изображение, распознано в текст)" : "");
+      return "### Вложение: " + title + "\n" + fence + "text\n" + content + "\n" + fence;
     }).join("\n\n");
   }
 
   function summaries(attachments) {
     return (attachments || []).map((item) => {
       const result = {};
-      ["id", "name", "kind", "mime", "bytes", "originalBytes", "width", "height"].forEach((key) => {
+      ["id", "name", "kind", "mime", "bytes", "originalBytes", "width", "height", "asText"].forEach((key) => {
         if (item[key] !== undefined) result[key] = item[key];
       });
       return result;
@@ -132,7 +158,7 @@
   }
 
   function buildUserMessage(prompt, images, transport, imageUserMessage) {
-    const attachedImages = (images || []).filter((item) => item && item.dataUrl);
+    const attachedImages = (images || []).filter((item) => item && item.dataUrl && !item.asText);
     if (!attachedImages.length) return { role: "user", content: prompt };
     const messages = attachedImages.map((item) => {
       const message = imageUserMessage(prompt, item, transport);
@@ -152,5 +178,8 @@
     };
   }
 
-  return { limits, readAttachment, composeText, summaries, buildUserMessage };
+    // Запрос, которым изображение с галкой «в текст» превращается в текст до основного вопроса.
+  const transcribePrompt = "Перепиши дословно весь текст с изображения (подписи, значения, ошибки, легенды графиков). Затем кратко опиши, что изображено: тип графика, оси, заметные пики и аномалии. Ответь только текстом, без Markdown-таблиц.";
+
+  return { limits, readAttachment, composeText, summaries, buildUserMessage, looksBinary, transcribePrompt };
 });

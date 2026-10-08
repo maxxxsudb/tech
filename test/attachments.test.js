@@ -135,3 +135,20 @@ test("file transport preserves original attachment filenames", () => {
   const message = attachments.buildUserMessage("Question", images, "openaiFileData", imageUserMessage);
   assert.deepEqual(message.content.filter((part) => part.type === "file").map((part) => part.file.filename), ["first.png", "second.jpg"]);
 });
+
+test("любой небинарный файл читается как текст, двоичный отклоняется", async () => {
+  const csv = await attachments.readAttachment({ name: "export.csv", type: "text/csv", size: 10, text: async () => "a;b\n1;2" });
+  assert.equal(csv.kind, "text");
+  assert.equal(csv.asText, true);
+  assert.match(attachments.composeText([csv]), /### Вложение: export.csv/);
+  await assert.rejects(attachments.readAttachment({ name: "dump.dat", size: 10, text: async () => "abc\u0000def" }), /двоичный/);
+  assert.equal(attachments.looksBinary("обычный текст"), false);
+});
+
+test("изображение с галкой «в текст» уходит распознанным текстом, а не картинкой", () => {
+  const image = { name: "graph.jpg", kind: "image", dataUrl: "data:image/jpeg;base64,AAAA", asText: true, transcript: "CPU 95% в 10:42" };
+  assert.match(attachments.composeText([image]), /graph.jpg \(изображение, распознано в текст\)[\s\S]*CPU 95%/);
+  const message = attachments.buildUserMessage("вопрос", [image], "openaiDataUri", () => { throw new Error("не должно вызываться"); });
+  assert.deepEqual(message, { role: "user", content: "вопрос" });
+  assert.equal(attachments.composeText([Object.assign({}, image, { asText: false })]), "");
+});

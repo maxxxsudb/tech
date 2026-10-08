@@ -588,3 +588,9 @@ test("выбор панелей переживает пересоздание dr
   assert.deepEqual(t.loadPanelSelection("k", context), [1, 2, 3]);
   delete global.sessionStorage;
 });
+
+test("вложения включены по умолчанию и выключаются профилем «Безопасный»", () => {
+  assert.equal(t.defaults.fileUploadsEnabled, true);
+  assert.equal(t.profileValues("safe").fileUploadsEnabled, false);
+  assert.equal(t.profileValues("normal").fileUploadsEnabled, true);
+});

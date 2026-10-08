@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.8.0";
+  const PLUGIN_VERSION = "0.8.1";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -44,6 +44,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     explainSamplePanels: 3,
     explainSampleRangeHours: 1,
     screenshotEnabled: true,
+    fileUploadsEnabled: true,
     previewBeforeSend: "always",
     allowedDatasourceUids: "",
     minimumRole: "Viewer",
@@ -69,6 +70,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       includePanelData: false,
       explainSampleRows: 0,
       screenshotEnabled: false,
+      fileUploadsEnabled: false,
       toolsMode: "text",
     },
     normal: {
@@ -1922,6 +1924,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const rootRef = React.useRef(null);
     const abortRef = React.useRef(null);
     const fileRef = React.useRef(null);
+    const actionsRef = React.useRef(null);
+    const actionsAutoClosed = React.useRef(false);
     const readingRef = React.useRef(false);
     const followRef = React.useRef(true);
     const composerRef = React.useRef(null);
@@ -1950,6 +1954,17 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     React.useEffect(() => {
       if (storageKey) saveHistory(storageKey, history);
     }, [history, storageKey]);
+
+    // Блок «Действия» по умолчанию свёрнут. Если он был открыт, на время подтверждения отправки
+    // он сворачивается и после отправки или отмены открывается снова.
+    React.useEffect(() => {
+      if (!sendPreview && actionsAutoClosed.current && actionsRef.current) actionsRef.current.open = true;
+    }, [sendPreview]);
+
+    // Вложения выключены администратором: уже добавленные файлы не уходят в модель.
+    React.useEffect(() => {
+      if (settings && settings.fileUploadsEnabled === false) setAttachments([]);
+    }, [settings]);
 
     React.useEffect(() => {
       if (storageKey) savePanelSelection(storageKey, selectedPanelIds);
@@ -2026,6 +2041,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       const readyContext = snapshotContext(selectedContext, reusesSnapshot ? previous : undefined);
       const modelPrompt = requestPrompt(prompt, action, attachments);
       const plan = planRequest(settings, sanitizeForAI(readyContext), apiHistory(action.baseHistory || history), modelPrompt);
+      // Блок действий сворачивается, чтобы подтверждение не сжимало историю до пары строк.
+      if (actionsRef.current && actionsRef.current.open) { actionsAutoClosed.current = true; actionsRef.current.open = false; }
       setSendPreview({
         prompt,
         action,
@@ -2077,7 +2094,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     }
 
     async function addFiles(files) {
-      if (busy || readingRef.current) return;
+      if (busy || readingRef.current || !filesOn) return;
       const list = Array.from(files || []);
       if (!list.length) return;
       if (attachments.length + list.length > attachmentTools.limits.maxFiles) { setError("Можно добавить не больше 4 файлов."); return; }
@@ -2158,9 +2175,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       const prompt = String(promptOverride || input).trim();
       if (!prompt || busy || readingFiles || !settings || !context) return;
       action = Object.assign({}, action);
-      const requestFiles = action.requestFiles || attachments;
+      let requestFiles = settings.fileUploadsEnabled === false ? [] : (action.requestFiles || attachments);
       const baseHistory = action.baseHistory || (editTurn ? editTurn.history : history);
-      const modelPrompt = requestPrompt(prompt, action, requestFiles);
+      let modelPrompt = requestPrompt(prompt, action, requestFiles);
       if (action && action.needsPanel && !context.panel && selectedPanelIds.length !== 1) {
         setTab("chat");
         setError(`«${action.label}» работает с одной панелью. На вкладке «Контекст» нажмите «Только эта» у нужной панели.`);
@@ -2182,6 +2199,28 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       try {
         assertAllowedRole(settings);
         screenshot = includeScreenshot && settings.screenshotEnabled !== false ? await captureDashboardScreenshot(rootRef.current) : undefined;
+        // Изображения с галкой «в текст» сначала распознаются отдельным коротким запросом,
+        // а в основной вопрос уходит только полученный текст.
+        if (requestFiles.some((item) => item.kind === "image" && item.asText && !item.transcript)) {
+          const transcribed = [];
+          for (const item of requestFiles) {
+            if (item.kind !== "image" || !item.asText || item.transcript) { transcribed.push(item); continue; }
+            setPending({ content: `Распознаём «${item.name}» в текст…`, reasoning: "", steps: [] });
+            try {
+              const result = await postChat(settings, { model: modelName(settings), stream: false, max_tokens: 1024, messages: [imageUserMessage(attachmentTools.transcribePrompt, item, settings.imageTransport)] }, { signal: controller.signal });
+              const text = splitThink(result.content).content.trim();
+              if (!text) throw new Error("модель вернула пустой ответ");
+              transcribed.push(Object.assign({}, item, { transcript: text }));
+            } catch (reason) {
+              if (controller.signal.aborted) throw reason;
+              throw new Error(`Не удалось распознать «${item.name}» в текст: ${formatError(reason)}. Снимите галку «в текст», чтобы отправить изображение как есть.`);
+            }
+          }
+          requestFiles = transcribed;
+          setAttachments((current) => current.map((file) => transcribed.find((item) => item.id === file.id) || file));
+          setPending(undefined);
+          modelPrompt = requestPrompt(prompt, action, requestFiles);
+        }
         // Диапазон и переменные берутся в момент отправки, а не при открытии чата.
         const selectedContext = selectContextPanels(withPageState(context), selectedPanelIds);
         const dataPlan = effectiveDataPlan(action, selectedContext);
@@ -2360,6 +2399,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       : withQueries > maxDataPanels ? ` · данные запросим для первых ${maxDataPanels} из ${withQueries} (лимит в настройках)` : "";
     const investigationContext = settings && context ? selectContextPanels(withPageState(context), selectedPanelIds) : context;
     const investigationStats = investigationSetup && settings ? investigationEstimate(settings, investigationContext, investigationSetup) : undefined;
+    const filesOn = Boolean(settings && settings.fileUploadsEnabled !== false);
     const setupOpen = Boolean(investigationSetup && investigationStats);
     const statsLine = lastRequest
       ? `Последний запрос ≈${(lastRequest.totalTokens / 1000).toFixed(1)}k ток.${lastRequest.windowTokens ? ` из ${(lastRequest.windowTokens / 1000).toFixed(1)}k` : ""}` +
@@ -2376,13 +2416,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       : "";
 
     return h("div", { style: styles.root, ref: rootRef,
-      onDragOver: (event) => { if (event.dataTransfer && Array.from(event.dataTransfer.types).includes("Files")) event.preventDefault(); },
-      onDrop: (event) => { if (event.dataTransfer && event.dataTransfer.files.length) { event.preventDefault(); addFiles(event.dataTransfer.files); } },
+      onDragOver: (event) => { if (filesOn && event.dataTransfer && Array.from(event.dataTransfer.types).includes("Files")) event.preventDefault(); },
+      onDrop: (event) => { if (filesOn && event.dataTransfer && event.dataTransfer.files.length) { event.preventDefault(); addFiles(event.dataTransfer.files); } },
     },
       h("div", { style: styles.header },
         h("div", { style: styles.context }, context
           ? `${context.dashboardTitle || "Текущая страница Grafana"}${context.panel ? ` · ${context.panel.title}` : ""}${settings ? ` · ${modelName(settings) || "модель не задана"}${settings.streaming !== false && isStreamUnsupported(settings) ? " (без stream)" : ""}` : ""}`
-          : "Загрузка контекста…")
+          : "Загрузка контекста…"),
+        history.length || busy ? h("button", { type: "button", style: styles.smallButton, onClick: newDialog }, "Новый диалог") : null
       ),
       h("div", { style: styles.tabs, role: "tablist" },
         [["chat", "Чат"], ["context", `Контекст · панели ${selectedPanelIds.length}/${panels.length}`], ["diag", "Диагностика"]].map(([id, label]) =>
@@ -2504,7 +2545,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       ) : null,
       h("div", { style: styles.footer },
         h("div", { style: { display: "flex", flexDirection: "column", gap: 8, flex: "1 1 auto", minHeight: 0, overflowY: "auto", overscrollBehavior: "contain" }, "data-testid": "tech-ai-controls" },
-        h("details", { style: styles.actionsPanel, "data-testid": "tech-ai-actions-panel" },
+        h("details", { style: styles.actionsPanel, ref: actionsRef, "data-testid": "tech-ai-actions-panel", onToggle: (event) => { if (event.currentTarget.open) actionsAutoClosed.current = false; } },
           h("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "Действия"),
           h("div", { style: { paddingTop: 8, maxHeight: 150, overflowY: "auto" } },
             h("div", { style: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6, marginBottom: 8 } }, quickPrompts.slice(0, 4).map((action) =>
@@ -2517,7 +2558,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             history.length || busy ? h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" } },
               h("button", { type: "button", style: styles.linkButton, disabled: busy, onClick: () => exportDialog(false) }, "Копировать диалог"),
               h("button", { type: "button", style: styles.linkButton, disabled: busy, onClick: () => exportDialog(true), "data-testid": "tech-ai-export" }, "Экспорт Markdown"),
-              h("button", { type: "button", style: styles.linkButton, disabled: busy, onClick: newDialog }, "Новый диалог")
             ) : null
           )
         ),
@@ -2538,7 +2578,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             ? `Будет получена выборка: ${sendPreview.dataEstimate.datasourceRequests * (sendPreview.dataPlan.comparePeriods ? 2 : 1)} HTTP-запросов, до ${sendPreview.dataEstimate.targetQueries * (sendPreview.dataPlan.comparePeriods ? 2 : 1)} запросов панелей, ${sendPreview.dataPlan.sampleRows || "настроенный лимит"} строк/точек. Диапазон ${new Date(sendPreview.dataEstimate.from).toLocaleString()} — ${new Date(sendPreview.dataEstimate.to).toLocaleString()}.`
             : sendPreview.snapshotAt ? `Используются уже полученные данные на ${new Date(sendPreview.snapshotAt).toLocaleTimeString()}, повторных запросов к datasource не будет.` : "Повторных запросов к datasource не будет."),
           sendPreview.screenshot ? h("div", null, "Снимок включён: браузер попросит выбрать вкладку или экран.") : null,
-          sendPreview.attachments.length ? h("div", null, `Вложения: ${sendPreview.attachments.map((item) => `${item.name} (${Math.ceil(item.bytes / 1024)} КБ)`).join(", ")}. Изображения отправляются выбранной модели; она должна уметь их принимать. Оценка токенов изображений не включена.`) : null,
+          sendPreview.attachments.length ? h("div", null, `Вложения: ${sendPreview.attachments.map((item) => `${item.name} (${Math.ceil(item.bytes / 1024)} КБ, ${item.kind !== "image" ? "текстом" : item.asText ? "будет распознано в текст" : "изображением"})`).join(", ")}.` +
+            (sendPreview.attachments.some((item) => item.kind === "image" && !item.asText) ? " Изображения получит модель: она должна уметь их принимать, токены картинок в оценку не входят." : "") +
+            (sendPreview.attachments.some((item) => item.kind === "image" && item.asText) ? " Распознавание — отдельный короткий запрос к модели перед вопросом." : "")) : null,
           h("div", { style: styles.context },
             "Enter ещё раз тоже отправит. ",
             h("button", { type: "button", style: styles.linkButton, onClick: () => setTab("context") }, "Что уйдёт в модель")
@@ -2546,13 +2588,18 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         ) : null,
         editTurn ? h("div", { style: styles.context }, "Редактирование вопроса: следующие сообщения будут заменены после отправки. ", h("button", { type: "button", style: styles.linkButton, onClick: () => { setEditTurn(undefined); setInput(""); setSendPreview(undefined); } }, "Отменить")) : null,
         h("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12 } },
-          h("input", { ref: fileRef, type: "file", multiple: true, accept: ".png,.jpg,.jpeg,.log,.txt,.json,.md", style: { display: "none" }, "data-testid": "tech-ai-file-input", onChange: (event) => { addFiles(event.target.files); event.target.value = ""; } }),
-          h("button", { type: "button", style: styles.smallButton, title: "PNG/JPEG, LOG/TXT/JSON/MD. Можно вставить из буфера или перетащить в чат.", disabled: busy || readingFiles, onClick: () => fileRef.current.click() }, readingFiles ? "Читаем файлы…" : "+ Файл"),
+          filesOn ? h("input", { ref: fileRef, type: "file", multiple: true, style: { display: "none" }, "data-testid": "tech-ai-file-input", onChange: (event) => { addFiles(event.target.files); event.target.value = ""; } }) : null,
+          filesOn ? h("button", { type: "button", style: styles.smallButton, title: "PNG/JPEG или любой текстовый файл (LOG, TXT, JSON, CSV, YAML…). Можно вставить из буфера или перетащить в чат.", disabled: busy || readingFiles, onClick: () => fileRef.current.click() }, readingFiles ? "Читаем файлы…" : "+ Файл") : null,
           h("span", { style: Object.assign({}, styles.context, { marginLeft: "auto" }) }, "Enter — отправить · Shift+Enter — строка")
         ),
-        attachments.length ? h("div", { style: { display: "flex", gap: 6, maxHeight: 70, overflowY: "auto", flexWrap: "wrap" }, "data-testid": "tech-ai-attachments" }, attachments.map((item) => h("div", { key: item.id, style: { display: "flex", gap: 6, alignItems: "center", padding: 4, border: "1px solid rgba(128,128,128,.3)", borderRadius: 6, minWidth: 0, fontSize: 12 } },
+        filesOn && attachments.length ? h("div", { style: { display: "flex", gap: 6, maxHeight: 70, overflowY: "auto", flexWrap: "wrap" }, "data-testid": "tech-ai-attachments" }, attachments.map((item) => h("div", { key: item.id, style: { display: "flex", gap: 6, alignItems: "center", padding: 4, border: "1px solid rgba(128,128,128,.3)", borderRadius: 6, minWidth: 0, fontSize: 12 } },
           item.kind === "image" ? h("img", { src: item.dataUrl, alt: item.name, style: { width: 40, height: 32, objectFit: "contain" } }) : null,
           h("span", { style: { overflowWrap: "anywhere" } }, `${item.name} · ${Math.ceil(item.bytes / 1024)} КБ`),
+          item.kind === "image"
+            ? h("label", { style: { display: "flex", gap: 3, alignItems: "center", whiteSpace: "nowrap" }, title: "Перед отправкой модель перепишет текст и содержимое изображения, и в вопрос уйдёт только этот текст. Подходит, если основной запрос с картинкой не проходит." },
+              h("input", { type: "checkbox", checked: Boolean(item.asText), disabled: busy, "data-testid": "tech-ai-attachment-as-text", onChange: (event) => { const checked = event.target.checked; setAttachments((current) => current.map((file) => file.id === item.id ? Object.assign({}, file, { asText: checked, transcript: checked ? file.transcript : undefined }) : file)); setSendPreview(undefined); } }),
+              "в текст")
+            : h("span", { style: styles.context, title: "Содержимое файла вставляется в сообщение текстом" }, "текстом"),
           h("button", { type: "button", style: styles.linkButton, disabled: busy, "aria-label": `Удалить ${item.name}`, onClick: () => { setAttachments((current) => current.filter((file) => file.id !== item.id)); setSendPreview(undefined); } }, "×")
         ))) : null
         ),
@@ -2564,7 +2611,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             disabled: busy || !ready || readingFiles,
             placeholder: "Например: исправь PromQL этой панели",
             onChange: (event) => { setInput(event.target.value); setSendPreview(undefined); },
-            onPaste: (event) => { if (event.clipboardData && event.clipboardData.files.length) { event.preventDefault(); addFiles(event.clipboardData.files); } },
+            onPaste: (event) => { if (filesOn && event.clipboardData && event.clipboardData.files.length) { event.preventDefault(); addFiles(event.clipboardData.files); } },
             onKeyDown: (event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -2816,6 +2863,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         )
       ),
       checkbox("Разрешить снимок дашборда (если выключено, галка в чате скрыта и захват экрана не запускается)", "screenshotEnabled", true),
+      checkbox("Разрешить вложения файлов (если выключено, в чате нет кнопки «Файл», вставка и перетаскивание файлов не работают)", "fileUploadsEnabled", true),
       state.screenshotEnabled === false ? null : h("div", { style: Object.assign({}, styles.field, { padding: 10, border: "1px solid rgba(128,128,128,.35)", borderRadius: 4 }) },
         h("strong", null, "Передача снимков"),
         h("label", { style: styles.field },
