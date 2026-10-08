@@ -26,7 +26,7 @@ function loadModule() {
   const grafanaData = { AppPlugin, BusEventWithPayload: class {}, dateMath };
   const grafanaRuntime = { config: { appSubUrl: "/crf/dashboard", bootData: { user: { orgId: 1, orgRole: "Admin" } } } };
   const React = { createElement: () => null, Fragment: "Fragment" };
-  return factory(grafanaData, grafanaRuntime, React, {}).__test;
+  return factory(grafanaData, grafanaRuntime, React, {}, require("../plugin/attachments.js"), require("../plugin/conversation.js"), require("../plugin/query-tools.js")).__test;
 }
 
 const t = loadModule();

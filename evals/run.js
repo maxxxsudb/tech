@@ -36,7 +36,7 @@ function loadPlugin(appSubUrl) {
   const store = new Map();
   global.sessionStorage = { getItem: (key) => (store.has(key) ? store.get(key) : null), setItem: (key, value) => store.set(key, String(value)), removeItem: (key) => store.delete(key) };
   const grafanaRuntime = { config: { appSubUrl, bootData: { user: { orgId: 1, orgRole: "Admin" } } } };
-  return factory({ AppPlugin, BusEventWithPayload: class {} }, grafanaRuntime, { createElement: () => null, Fragment: "Fragment" }, {}).__test;
+  return factory({ AppPlugin, BusEventWithPayload: class {} }, grafanaRuntime, { createElement: () => null, Fragment: "Fragment" }, {}, require("../plugin/attachments.js"), require("../plugin/conversation.js"), require("../plugin/query-tools.js")).__test;
 }
 
 async function setup() {

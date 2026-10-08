@@ -1,4 +1,4 @@
-define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (grafanaData, grafanaRuntime, React, ReactDOM) {
+define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachments", "./conversation", "./query-tools"], function (grafanaData, grafanaRuntime, React, ReactDOM, attachmentTools, conversationTools, queryTools) {
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
@@ -135,7 +135,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   const styles = {
     root: { display: "flex", flexDirection: "column", width: "100%", maxWidth: "100%", height: "100%", minWidth: 0, minHeight: 0, gap: 10, overflow: "hidden", boxSizing: "border-box" },
     header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0, maxWidth: "100%" },
-    history: { flex: "1 1 0", minWidth: 0, minHeight: 180, maxWidth: "100%", overflowX: "hidden", overflowY: "auto", overscrollBehavior: "contain", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: 14, padding: "10px 6px 14px" },
+    history: { flex: "1 1 0", minWidth: 0, minHeight: 0, maxWidth: "100%", overflowX: "hidden", overflowY: "auto", overscrollBehavior: "contain", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: 14, padding: "10px 6px 14px" },
     user: { alignSelf: "flex-end", flexShrink: 0, minWidth: 0, maxWidth: "88%", padding: "10px 14px", lineHeight: 1.45, borderRadius: "12px 12px 3px 12px", background: "#1f60c4", color: "white", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", boxShadow: "0 1px 2px rgba(0,0,0,.18)" },
     assistant: { alignSelf: "stretch", flexShrink: 0, minWidth: 0, maxWidth: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(128,128,128,.2)", background: "rgba(128,128,128,.08)", overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word", boxSizing: "border-box" },
     markdown: { minWidth: 0, maxWidth: "100%", lineHeight: 1.6, overflowWrap: "anywhere", wordBreak: "break-word" },
@@ -928,7 +928,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const all = (context.panel ? [context.panel] : (context.panels || [])).filter((panel) => panelTargets(settings, panel).length);
     const maxPanels = positiveInt(options.maxPanels, positiveInt(settings.maxDataPanels, defaults.maxDataPanels, 50), 50);
     const maxTargets = positiveInt(options.maxTargets, positiveInt(settings.maxTargetsPerPanel, defaults.maxTargetsPerPanel, 20), 20);
-    const range = limitedRange(context, options.rangeHours);
+    const range = options.range || limitedRange(context, options.rangeHours);
     const limits = dataLimits(settings);
     if (options.sampleRows !== undefined) {
       limits.rows = Math.max(0, Math.min(20, Number(options.sampleRows) || 0));
@@ -1359,7 +1359,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     { label: "Исправить запрос", needsPanel: true, prompt: "Найди ошибки в запросах выбранной панели. Предложи исправленный запрос и dashboard-json для безопасного применения." },
     { label: "Оптимизировать", needsPanel: true, prompt: "Проверь запросы выбранной панели на производительность и стоимость. Предложи оптимизированный вариант и dashboard-json." },
     { label: "Расследовать", investigation: true, prompt: "Проведи расследование по подтверждённому диапазону времени. Сопоставь фактические результаты панелей, сформируй гипотезы, доказательства, исходные запросы и следующие проверки. Если дополнительные запросы не разрешены, работай только с переданными результатами. Не выдавай гипотезы за факты." },
-  ];
+  ].concat(conversationTools.playbooks);
 
   async function captureDashboardScreenshot(extraHiddenElement) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
@@ -1569,12 +1569,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
   }
 
   function shrinkPanelData(context, limits) {
-    if (!Array.isArray(context.panelData)) return context;
-    return Object.assign({}, context, {
-      panelData: context.panelData.map((item) => Object.assign({}, item, {
+    const next = Object.assign({}, context);
+    ["panelData", "comparisonPanelData"].forEach((key) => {
+      if (Array.isArray(next[key])) next[key] = next[key].map((item) => Object.assign({}, item, {
         results: (item.results || []).map((entry) => Object.assign({}, entry, { result: shrinkResult(entry.result, limits) })),
-      })),
+      }));
     });
+    return next;
   }
 
   const contextReducers = [
@@ -1767,6 +1768,40 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     );
   }
 
+  function ProposalView(props) {
+    const proposal = props.proposal;
+    const current = (props.panel && props.panel.targets) || [];
+    const [selected, setSelected] = React.useState(() => proposal.targets.map(queryTools.targetId));
+    React.useEffect(() => { setSelected(proposal.targets.map(queryTools.targetId)); }, [JSON.stringify(proposal.targets)]);
+    const chosen = Object.assign({}, proposal, { targets: queryTools.mergeSelectedTargets(current, proposal.targets, selected) });
+    const editor = props.context.dashboardUid ? `${appSubUrl()}/d/${encodeURIComponent(props.context.dashboardUid)}?${new URLSearchParams({ editPanel: String(proposal.panelId), orgId: String(orgId() || 1) })}` : undefined;
+    return h("div", { style: styles.proposal, "data-testid": "tech-ai-proposal" },
+      h("strong", null, `Предложение для панели ${proposal.panelId}${props.panel ? ` «${props.panel.title}»` : ""}`),
+      h("details", { style: styles.context, "data-testid": "tech-ai-proposal-diff" },
+        h("summary", { style: { cursor: "pointer" } }, "Показать изменения запросов"),
+        proposal.targets.map((target, index) => {
+          const id = queryTools.targetId(target, index);
+          const before = current.find((item) => item.refId === target.refId) || (!target.refId ? current[index] : undefined);
+          const datasource = target.datasource || (props.panel && props.panel.datasource);
+          const url = exploreUrl(props.context, datasource, target);
+          return h("div", { key: id, style: { marginTop: 10 } },
+            h("label", null, h("input", { type: "checkbox", checked: selected.includes(id), disabled: props.busy, onChange: (event) => setSelected((ids) => event.target.checked ? ids.concat([id]) : ids.filter((item) => item !== id)) }), ` Запрос ${target.refId || index + 1}`),
+            h("pre", { style: Object.assign({}, styles.pre, { marginTop: 4 }), "data-testid": "tech-ai-query-diff" }, queryTools.diffLines(queryTools.expression(before), queryTools.expression(target)).map((line, i) =>
+              h("div", { key: i, style: { color: line.type === "add" ? "#56a64b" : line.type === "remove" ? "#e02f44" : "inherit", whiteSpace: "pre-wrap" } }, `${line.type === "add" ? "+ " : line.type === "remove" ? "− " : "  "}${line.text}`)
+            )),
+            url ? h("a", { href: url, target: "_blank", rel: "noreferrer" }, "Проверить в Explore") : null
+          );
+        })
+      ),
+      h("div", { style: styles.quickActions },
+        h("button", { type: "button", style: styles.smallButton, disabled: !selected.length, onClick: () => copyText(JSON.stringify(chosen, null, 2)) }, "Копировать JSON"),
+        editor ? h("a", { href: editor, target: "_blank", rel: "noreferrer", style: Object.assign({}, styles.smallButton, { display: "inline-flex", alignItems: "center" }) }, "Редактор панели") : null,
+        h("button", { type: "button", style: styles.button, disabled: props.busy || !selected.length, onClick: () => props.onApply(chosen) }, "Применить к дашборду")
+      ),
+      h("div", { style: styles.context }, "Применяются только отмеченные запросы. Остальные сохраняются. Редактор открывает текущую панель без сохранения изменений.")
+    );
+  }
+
   // ---------- История диалога ----------
 
   function historyKey(context) {
@@ -1816,8 +1851,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const result = [];
     history.filter((item) => !item.local && !item.failed && typeof item.content === "string").forEach((item) => {
       const last = result[result.length - 1];
-      if (last && last.role === item.role) last.content = `${last.content}\n\n${item.content}`;
-      else result.push({ role: item.role, content: item.content });
+      const content = item.modelContent || item.content;
+      if (last && last.role === item.role) last.content = `${last.content}\n\n${content}`;
+      else result.push({ role: item.role, content });
     });
     while (result.length && result[0].role !== "user") result.shift();
     if (result.length && result[result.length - 1].role === "user") result.pop();
@@ -1845,7 +1881,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       timeRange: context && context.timeRange,
       variables: context && context.variables,
       limits: [settings.includePanelData, settings.maxDataPanels, settings.maxTargetsPerPanel, settings.maxSeriesPerQuery, settings.recentPoints, settings.maxPanelRows, settings.contextTokens],
-      dataPlan: dataPlan ? [dataPlan.rangeHours, dataPlan.maxPanels, dataPlan.maxTargets, dataPlan.totalTimeoutSeconds, dataPlan.sampleRows] : undefined,
+      dataPlan: dataPlan ? [dataPlan.rangeHours, dataPlan.maxPanels, dataPlan.maxTargets, dataPlan.totalTimeoutSeconds, dataPlan.sampleRows, Boolean(dataPlan.comparePeriods)] : undefined,
     });
   }
 
@@ -1867,6 +1903,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState("");
     const [includeScreenshot, setIncludeScreenshot] = React.useState(false);
+    const [attachments, setAttachments] = React.useState([]);
+    const [readingFiles, setReadingFiles] = React.useState(false);
+    const [editTurn, setEditTurn] = React.useState();
     const [investigationSetup, setInvestigationSetup] = React.useState();
     const [dataProgress, setDataProgress] = React.useState();
     const [selectedPanelIds, setSelectedPanelIds] = React.useState([]);
@@ -1880,6 +1919,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     const historyRef = React.useRef(null);
     const rootRef = React.useRef(null);
     const abortRef = React.useRef(null);
+    const fileRef = React.useRef(null);
+    const readingRef = React.useRef(false);
 
     React.useEffect(() => {
       let cancelled = false;
@@ -1928,6 +1969,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
     // обычный вопрос после них переиспользует снимок, а если сменились диапазон, переменные или панели
     // либо нажато «Обновить данные», снимает их заново по тому же плану.
     function effectiveDataPlan(action, selectedContext) {
+      if (action && action.dataMode === "structure") return undefined;
+      if (action && action.dataMode === "sample") return samplePlanFor({ sampleData: true });
       const explicit = (action && action.dataPlan) || samplePlanFor(action);
       if (explicit) return explicit;
       const previous = snapshotRef.current;
@@ -1936,7 +1979,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
 
     function prepareSend(promptOverride, action) {
       const prompt = String(promptOverride || input).trim();
-      if (!prompt || busy || !settings || !context) return;
+      if (!prompt || busy || readingFiles || !settings || !context) return;
+      action = Object.assign({}, action);
+      if (editTurn && !action.baseHistory) {
+        action.baseHistory = editTurn.history;
+        action.attachmentText = editTurn.message.attachmentText;
+        if (!action.modelContent && prompt === editTurn.message.content) action.modelContent = editTurn.message.modelContent;
+      }
       if (action && action.needsPanel && !context.panel && selectedPanelIds.length !== 1) {
         setTab("chat");
         setError(`«${action.label}» работает с одной панелью. На вкладке «Контекст» нажмите «Только эта» у нужной панели.`);
@@ -1952,10 +2001,12 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       // Повторный Enter или повторное нажатие того же действия при открытом предпросмотре отправляет.
       const sameAsPreview = sendPreview && sendPreview.prompt === prompt && ((sendPreview.action && sendPreview.action.label) || "") === ((action && action.label) || "");
       if (sameAsPreview || previewMode === "never" || (previewMode === "data" && !fetchesData && !screenshotOn)) {
-        send(prompt, action);
+        send(prompt, sameAsPreview ? sendPreview.action : action);
         return;
       }
-      const plan = planRequest(settings, sanitizeForAI(selectedContext), apiHistory(history), prompt);
+      const readyContext = snapshotContext(selectedContext, reusesSnapshot ? previous : undefined);
+      const modelPrompt = requestPrompt(prompt, action, attachments);
+      const plan = planRequest(settings, sanitizeForAI(readyContext), apiHistory(action.baseHistory || history), modelPrompt);
       setSendPreview({
         prompt,
         action,
@@ -1967,7 +2018,83 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         dataEstimate: fetchesData ? investigationEstimate(settings, selectedContext, dataPlan) : undefined,
         snapshotAt: reusesSnapshot ? previous.at : undefined,
         screenshot: screenshotOn,
+        attachments: attachmentTools.summaries(attachments),
+        dataMode: action.dataMode || (dataPlan ? dataPlan.sampleRows ? "sample" : "investigation" : "structure"),
+        model: modelName(settings),
       });
+    }
+
+    function requestPrompt(prompt, action, files) {
+      const text = attachmentTools.composeText(files);
+      const base = action && action.modelContent || prompt;
+      return redactString(base + (action && action.attachmentText ? `\n\n${action.attachmentText}` : "") + (text ? `\n\n${text}` : ""));
+    }
+
+    function snapshotContext(selectedContext, snapshot) {
+      if (!snapshot) return selectedContext;
+      return Object.assign({}, selectedContext, {
+        panelData: snapshot.panelData,
+        dataSnapshotAt: new Date(snapshot.at).toISOString(),
+        panelDataRange: { from: new Date(snapshot.range.from).toISOString(), to: new Date(snapshot.range.to).toISOString() },
+        comparisonPanelData: snapshot.comparisonPanelData,
+        comparisonPanelDataRange: snapshot.comparisonRange,
+      });
+    }
+
+    function changeDataMode(mode) {
+      const preview = sendPreview;
+      if (!preview) return;
+      const action = Object.assign({}, preview.action, { prompt: preview.prompt, dataMode: mode, dataPlan: undefined });
+      setSendPreview(undefined);
+      if (mode === "investigation") openInvestigation(action);
+      else {
+        const selectedContext = selectContextPanels(withPageState(context), selectedPanelIds);
+        const dataPlan = effectiveDataPlan(action, selectedContext);
+        const previous = snapshotRef.current;
+        const reused = Boolean(dataPlan && previous && !previous.stale && previous.key === snapshotKey(selectedContext, selectedPanelIds, settings, dataPlan));
+        const plan = planRequest(settings, sanitizeForAI(snapshotContext(selectedContext, reused ? previous : undefined)), apiHistory(action.baseHistory || history), requestPrompt(preview.prompt, action, attachments));
+        setSendPreview(Object.assign({}, preview, { action, dataMode: mode, dataPlan, contextJson: plan.contextJson, estimatedTokens: plan.totalTokens, dataEstimate: dataPlan && !reused ? investigationEstimate(settings, selectedContext, dataPlan) : undefined, snapshotAt: reused ? previous.at : undefined }));
+      }
+    }
+
+    async function addFiles(files) {
+      if (busy || readingRef.current) return;
+      const list = Array.from(files || []);
+      if (!list.length) return;
+      if (attachments.length + list.length > attachmentTools.limits.maxFiles) { setError("Можно добавить не больше 4 файлов."); return; }
+      readingRef.current = true;
+      setReadingFiles(true);
+      setSendPreview(undefined);
+      setError("");
+      try {
+        const prepared = await Promise.all(list.map(attachmentTools.readAttachment));
+        setAttachments((current) => current.concat(prepared));
+      } catch (reason) { setError(formatError(reason)); }
+      finally { readingRef.current = false; setReadingFiles(false); }
+    }
+
+    function editMessage(index) {
+      const turn = conversationTools.turnAt(history, index);
+      if (!turn || busy) return;
+      if ((turn.message.attachments || []).some((item) => item.kind === "image")) setError("Изображения не хранятся в диалоге. Для повторного анализа прикрепите их заново.");
+      setEditTurn(turn);
+      setInput(turn.message.content);
+      setAttachments([]);
+      setSendPreview(undefined);
+      setTab("chat");
+    }
+
+    function regenerate(index) {
+      const turn = conversationTools.turnAt(history, index);
+      if (!turn || busy) return;
+      if ((turn.message.attachments || []).some((item) => item.kind === "image")) { editMessage(index); return; }
+      prepareSend(turn.message.content, Object.assign({}, turn.message.action, { baseHistory: turn.history, modelContent: turn.message.modelContent }));
+    }
+
+    function exportDialog(download) {
+      const markdown = conversationTools.exportMarkdown(sanitizeForAI(history), sanitizeForAI(selectContextPanels(withPageState(context), selectedPanelIds)), sanitizeForAI(lastRequest));
+      if (download) conversationTools.downloadMarkdown(markdown, context.dashboardTitle);
+      else copyText(markdown);
     }
 
     function openInvestigation(action) {
@@ -1981,6 +2108,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         totalTimeoutSeconds: 45,
         collectPanelData: settings.includePanelData !== false,
         allowQueries: false,
+        comparePeriods: Boolean(action.comparePeriods),
       });
     }
 
@@ -1990,18 +2118,24 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       setInvestigationSetup(undefined);
       send(setup.action.prompt, Object.assign({}, setup.action, {
         queries: setup.allowQueries,
+        dataMode: setup.collectPanelData ? "investigation" : "structure",
         dataPlan: setup.collectPanelData ? {
           rangeHours: Number(setup.rangeHours) || 0,
           maxPanels: Number(setup.maxPanels) || 1,
           maxTargets: Number(setup.maxTargets) || 1,
           totalTimeoutSeconds: Number(setup.totalTimeoutSeconds) || 45,
+          comparePeriods: setup.comparePeriods,
         } : undefined,
       }));
     }
 
     async function send(promptOverride, action) {
       const prompt = String(promptOverride || input).trim();
-      if (!prompt || busy || !settings || !context) return;
+      if (!prompt || busy || readingFiles || !settings || !context) return;
+      action = Object.assign({}, action);
+      const requestFiles = action.requestFiles || attachments;
+      const baseHistory = action.baseHistory || (editTurn ? editTurn.history : history);
+      const modelPrompt = requestPrompt(prompt, action, requestFiles);
       if (action && action.needsPanel && !context.panel && selectedPanelIds.length !== 1) {
         setTab("chat");
         setError(`«${action.label}» работает с одной панелью. На вкладке «Контекст» нажмите «Только эта» у нужной панели.`);
@@ -2029,30 +2163,38 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         let snapshot = key && snapshotRef.current && !snapshotRef.current.stale && snapshotRef.current.key === key ? snapshotRef.current : undefined;
         if (dataPlan && !snapshot) {
           const range = limitedRange(selectedContext, dataPlan.rangeHours);
-          setDataProgress({ completed: 0, total: investigationEstimate(settings, selectedContext, dataPlan).panels });
-          const panelData = await loadPanelData(settings, selectedContext, {
+          const count = investigationEstimate(settings, selectedContext, dataPlan).panels;
+          const dataStarted = Date.now();
+          const collect = (queryRange, offset) => loadPanelData(settings, selectedContext, {
             signal: controller.signal,
+            range: queryRange,
             rangeHours: dataPlan.rangeHours,
             maxPanels: dataPlan.maxPanels,
             maxTargets: dataPlan.maxTargets,
             sampleRows: dataPlan.sampleRows,
-            totalTimeoutSeconds: dataPlan.totalTimeoutSeconds,
-            onProgress: setDataProgress,
+            totalTimeoutSeconds: Math.max(1, dataPlan.totalTimeoutSeconds - (Date.now() - dataStarted) / 1000),
+            onProgress: (progress) => setDataProgress({ completed: offset + progress.completed, total: count * (dataPlan.comparePeriods ? 2 : 1) }),
           });
+          const panelData = await collect(range, 0);
           snapshot = { key, dataPlan, panelData, at: Date.now(), range };
+          if (dataPlan.comparePeriods) {
+            const priorRange = { from: range.from - (range.to - range.from), to: range.from };
+            snapshot.comparisonPanelData = Date.now() - dataStarted < dataPlan.totalTimeoutSeconds * 1000
+              ? await collect(priorRange, count)
+              : panelData.map((item) => ({ panelId: item.panelId, title: item.title, error: "Общий таймаут: предыдущий период не запрашивался" }));
+            snapshot.comparisonRange = { from: new Date(priorRange.from).toISOString(), to: new Date(priorRange.to).toISOString() };
+          }
           snapshotRef.current = snapshot;
           setSnapshotInfo({ at: snapshot.at, stats: panelDataStats(panelData), range });
         }
-        const requestContext = sanitizeForAI(snapshot ? Object.assign({}, selectedContext, {
-          panelData: snapshot.panelData,
-          dataSnapshotAt: new Date(snapshot.at).toISOString(),
-          panelDataRange: { from: new Date(snapshot.range.from).toISOString(), to: new Date(snapshot.range.to).toISOString() },
-        }) : selectedContext);
+        const requestContext = sanitizeForAI(snapshotContext(selectedContext, snapshot));
+        const plan = planRequest(settings, requestContext, apiHistory(baseHistory), modelPrompt);
+        if (plan.windowTokens && plan.totalTokens + (Number(settings.maxTokens) || 1024) > plan.windowTokens) throw new Error("Вопрос и вложения не помещаются в настроенное окно контекста. Уменьшите файлы или увеличьте Context tokens в Configuration.");
         setInput("");
-        const plan = planRequest(settings, requestContext, apiHistory(history), prompt, { fitted: snapshot && snapshot.fitted });
-        if (snapshot) snapshot.fitted = plan.fitted;
-        userMessage = { role: "user", content: prompt, note: (screenshotNote(screenshot, settings.imageTransport) + panelDataNote(requestContext)).trim() };
-        setHistory((current) => current.concat([userMessage]));
+        const imageFiles = requestFiles.filter((item) => item.kind === "image").concat(screenshot ? [Object.assign({ name: "dashboard.jpg", kind: "image" }, screenshot)] : []);
+        userMessage = { role: "user", content: prompt, modelContent: modelPrompt, attachmentText: redactString([action.attachmentText, attachmentTools.composeText(requestFiles)].filter(Boolean).join("\n\n")), attachments: attachmentTools.summaries(imageFiles.concat(requestFiles.filter((item) => item.kind === "text"))), action: { dataMode: action.dataMode, dataPlan, queries: action.queries }, note: (screenshotNote(screenshot, settings.imageTransport) + panelDataNote(requestContext)).trim() };
+        setHistory(baseHistory.concat([userMessage]));
+        setEditTurn(undefined);
         setPending(partial);
         const request = {
           contextJson: plan.contextJson,
@@ -2065,9 +2207,12 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           data: panelDataStats((snapshot && snapshot.panelData) || []),
           dataRange: snapshot && snapshot.range,
           screenshot: screenshot ? { format: "JPEG", width: screenshot.width, height: screenshot.height, bytes: screenshot.bytes, transport: imageTransportLabels[settings.imageTransport || defaults.imageTransport] } : undefined,
+          attachments: attachmentTools.summaries(requestFiles),
+          comparisonRange: snapshot && snapshot.comparisonRange,
+          model: modelName(settings),
         };
         setLastRequest(request);
-        const messages = plan.messages.concat([imageUserMessage(prompt, screenshot, settings.imageTransport)]);
+        const messages = plan.messages.concat([attachmentTools.buildUserMessage(modelPrompt, imageFiles, settings.imageTransport, imageUserMessage)]);
         const result = await runAssistant(settings, requestContext, plan.contextJson, messages, {
           queries: Boolean(action && action.queries),
           signal: controller.signal,
@@ -2080,6 +2225,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         const calibrated = recordCalibration(settings, result.calibration);
         setLastRequest(Object.assign({}, request, { usage: result.usage, charsPerToken: result.calibration ? calibrated : undefined, totalMs: Date.now() - started, firstTokenMs: settings.streaming !== false ? firstTokenMs : undefined }));
         setHistory((current) => current.concat([{ role: "assistant", content: result.content, reasoning: result.reasoning, steps: result.steps }]));
+        setAttachments([]);
       } catch (reason) {
         if (reason && reason.name === "AbortError" && userMessage) {
           setHistory((current) => current.concat([{ role: "assistant", content: `${partial.content || ""}\n\n_(ответ остановлен)_`.trim(), reasoning: partial.reasoning, steps: partial.steps }]));
@@ -2098,7 +2244,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
             setHistory((current) => current.map((item) => (item === userMessage ? Object.assign({}, item, { failed: true }) : item)));
             setInput((current) => current || prompt);
           }
-          setRetry({ prompt, action });
+          setRetry({ prompt, action: Object.assign({}, action, { baseHistory, requestFiles, modelContent: action.modelContent }) });
           setError(message);
         }
       } finally {
@@ -2130,6 +2276,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       setError("");
       setRetry(undefined);
       setLastRequest(undefined);
+      setInput("");
+      setAttachments([]);
+      setEditTurn(undefined);
+      setSendPreview(undefined);
       clearData();
     }
 
@@ -2137,39 +2287,23 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       const proposal = parseDashboardProposal(message.content);
       if (!proposal) return null;
       const panel = panelForProposal(context, proposal);
-      return h("div", { key: `proposal-${index}`, style: styles.proposal },
-        h("strong", null, `Предложение для панели ${proposal.panelId}${panel && panel.title ? ` «${panel.title}»` : ""}`),
-        h("details", { style: styles.context, "data-testid": "tech-ai-proposal-diff" },
-          h("summary", { style: { cursor: "pointer" } }, "Показать изменения: было и станет"),
-          h("div", { style: Object.assign({}, styles.diff, { marginTop: 8 }) },
-            h("div", null, h("div", { style: styles.context }, "Было"), h("pre", { style: styles.pre }, JSON.stringify((panel && panel.targets) || [], null, 2))),
-            h("div", null, h("div", { style: styles.context }, "Станет"), h("pre", { style: styles.pre }, JSON.stringify(proposal.targets, null, 2)))
-          )
-        ),
-        h("div", { style: styles.quickActions },
-          h("button", { type: "button", style: styles.button, onClick: () => copyText(JSON.stringify(proposal, null, 2)) }, "Копировать JSON"),
-          h("button", {
-            type: "button",
-            style: styles.button,
-            onClick: async () => {
-              if (!window.confirm(`Применить новые targets к панели ${proposal.panelId}?`)) return;
-              try {
-                await applyDashboardProposal(settings, context, proposal);
-                const next = history.concat([{ role: "assistant", local: true, content: `✅ Новые запросы применены к панели ${proposal.panelId}. Страница перезагружается.` }]);
-                saveHistory(storageKey, next);
-                window.location.reload();
-              } catch (reason) {
-                setError(`Ошибка применения: ${formatError(reason)}`);
-              }
-            },
-          }, "Применить к дашборду")
-        )
-      );
+      return h(ProposalView, { key: `proposal-${index}`, proposal, panel, context, busy, onApply: async (chosen) => {
+        if (!window.confirm(`Применить отмеченные targets к панели ${proposal.panelId}? Дашборд будет сохранён.`)) return;
+        try {
+          await applyDashboardProposal(settings, context, chosen);
+          saveHistory(storageKey, history.concat([{ role: "assistant", local: true, content: `✅ Новые запросы применены к панели ${proposal.panelId}. Страница перезагружается.` }]));
+          window.location.reload();
+        } catch (reason) { setError(`Ошибка применения: ${formatError(reason)}`); }
+      } });
     }
 
     function messageView(message, index, isPending) {
       if (message.role === "user") {
-        return h("div", { key: index, style: Object.assign({}, styles.user, message.failed ? { opacity: 0.6 } : null) }, message.content + (message.note ? `\n${message.note}` : "") + (message.failed ? "\n⚠ Без ответа, в историю модели не попадёт" : ""));
+        return h("div", { key: index, style: Object.assign({}, styles.user, message.failed ? { opacity: 0.6 } : null) },
+          message.content + (message.note ? `\n${message.note}` : "") + (message.failed ? "\n⚠ Без ответа, в историю модели не попадёт" : ""),
+          (message.attachments || []).length ? h("div", { style: { fontSize: 12, marginTop: 6 } }, message.attachments.map((item) => `${item.name} · ${Math.ceil(item.bytes / 1024)} КБ`).join("; ")) : null,
+          h("button", { type: "button", style: Object.assign({}, styles.smallButton, { marginTop: 6 }), disabled: busy, onClick: () => editMessage(index), "data-testid": "tech-ai-edit-message" }, "Изменить вопрос")
+        );
       }
       const content = isPending && !message.content && !(message.steps || []).length && !message.reasoning ? "…" : message.content;
       return h(React.Fragment, { key: index },
@@ -2177,7 +2311,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           message.reasoning ? h("details", { style: styles.context }, h("summary", { style: { cursor: "pointer" } }, isPending && !message.content ? "Размышляет…" : "Размышления модели"), h("div", { style: { whiteSpace: "pre-wrap" } }, message.reasoning)) : null,
           (message.steps || []).map((step, stepIndex) => h(StepView, { key: `step-${stepIndex}`, step, context })),
           isPending ? h("div", { style: { whiteSpace: "pre-wrap" } }, stripPendingQueries(content)) : h(MessageContent, { content, context }),
-          !isPending && content ? h("button", { type: "button", style: Object.assign({}, styles.smallButton, { marginTop: 6 }), onClick: () => copyText(content) }, "Копировать ответ") : null
+          !isPending && content ? h("div", { style: Object.assign({}, styles.quickActions, { marginTop: 8, marginBottom: 0 }) },
+            h("button", { type: "button", style: styles.smallButton, onClick: () => copyText(content) }, "Копировать ответ"),
+            !message.local ? h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: () => regenerate(index), "data-testid": "tech-ai-regenerate" }, "Перегенерировать") : null,
+            !message.local ? h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: () => prepareSend("Продолжи предыдущий ответ с места остановки, без повторения уже написанного.", { dataMode: "structure" }), "data-testid": "tech-ai-continue" }, "Продолжить") : null
+          ) : null
         ),
         !isPending ? proposalCard(message, index) : null
       );
@@ -2208,7 +2346,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         (lastRequest.screenshot ? ` · снимок: ${lastRequest.screenshot.format} ${lastRequest.screenshot.width}×${lastRequest.screenshot.height}, ${Math.ceil(lastRequest.screenshot.bytes / 1024)} КБ` : "")
       : "";
 
-    return h("div", { style: styles.root, ref: rootRef },
+    return h("div", { style: styles.root, ref: rootRef,
+      onDragOver: (event) => { if (event.dataTransfer && Array.from(event.dataTransfer.types).includes("Files")) event.preventDefault(); },
+      onDrop: (event) => { if (event.dataTransfer && event.dataTransfer.files.length) { event.preventDefault(); addFiles(event.dataTransfer.files); } },
+    },
       h("div", { style: styles.header },
         h("div", { style: styles.context }, context
           ? `${context.dashboardTitle || "Текущая страница Grafana"}${context.panel ? ` · ${context.panel.title}` : ""}${settings ? ` · ${modelName(settings) || "модель не задана"}${settings.streaming !== false && isStreamUnsupported(settings) ? " (без stream)" : ""}` : ""}`
@@ -2229,7 +2370,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       ) : null,
       dataProgress ? h("div", { style: styles.context, "data-testid": "tech-ai-data-progress" }, `Получаем данные: ${dataProgress.completed} из ${dataProgress.total}`) : null,
       investigationSetup && investigationStats ? h("div", { style: styles.proposal, "data-testid": "tech-ai-investigation-setup" },
-        h("strong", null, "Параметры расследования"),
+        h("strong", null, investigationSetup.comparePeriods ? "Сравнение периодов" : "Параметры расследования"),
         h("div", { style: styles.context }, "Повторные запросы к datasource выполнятся только после подтверждения."),
         h("label", { style: styles.field },
           h("span", null, "Диапазон данных"),
@@ -2245,9 +2386,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
         h("label", { style: styles.field }, h("span", null, "Общий таймаут сбора, секунд"), h("input", { style: styles.input, type: "number", min: 1, max: 300, value: investigationSetup.totalTimeoutSeconds, onChange: (event) => setInvestigationSetup(Object.assign({}, investigationSetup, { totalTimeoutSeconds: event.target.value })) })),
         h("label", { style: styles.attachment }, h("input", { type: "checkbox", checked: investigationSetup.collectPanelData, disabled: settings.includePanelData === false, onChange: (event) => setInvestigationSetup(Object.assign({}, investigationSetup, { collectPanelData: event.target.checked })) }), " Получить ограниченную выборку фактических данных"),
         settings.includePanelData === false ? h("div", { style: styles.context }, "Сбор данных отключён администратором в Configuration.") : null,
+        h("label", { style: styles.attachment }, h("input", { type: "checkbox", checked: investigationSetup.comparePeriods, disabled: !investigationSetup.collectPanelData, onChange: (event) => setInvestigationSetup(Object.assign({}, investigationSetup, { comparePeriods: event.target.checked })) }), " Сравнить с предыдущим периодом той же длительности (вдвое больше запросов)"),
         h("label", { style: styles.attachment }, h("input", { type: "checkbox", checked: investigationSetup.allowQueries, onChange: (event) => setInvestigationSetup(Object.assign({}, investigationSetup, { allowQueries: event.target.checked })) }), " Разрешить модели дополнительные read-only запросы"),
         h("div", { style: styles.context }, investigationSetup.collectPanelData
-          ? `Будет: ${investigationStats.datasourceRequests} HTTP-запросов к datasource, до ${investigationStats.targetQueries} запросов панелей; фактический диапазон ${new Date(investigationStats.from).toLocaleString()} — ${new Date(investigationStats.to).toLocaleString()}.`
+          ? `Будет: ${investigationStats.datasourceRequests * (investigationSetup.comparePeriods ? 2 : 1)} HTTP-запросов к datasource, до ${investigationStats.targetQueries * (investigationSetup.comparePeriods ? 2 : 1)} запросов панелей; фактический диапазон ${new Date(investigationStats.from).toLocaleString()} — ${new Date(investigationStats.to).toLocaleString()}.` + (investigationSetup.comparePeriods ? ` Предыдущий период: ${new Date(investigationStats.from - (investigationStats.to - investigationStats.from)).toLocaleString()} — ${new Date(investigationStats.from).toLocaleString()}.` : "")
           : "Повторных запросов не будет: в модель уйдут только структура дашборда и тексты запросов."),
         h("div", { style: styles.quickActions },
           h("button", { type: "button", style: styles.button, disabled: busy, onClick: startInvestigation }, "Начать расследование"),
@@ -2263,7 +2405,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       ) : null,
       tab === "context" ? h("div", { style: styles.tabBody, "data-testid": "tech-ai-context-tab" },
         sendPreview ? h("div", { style: styles.proposal },
-          h("strong", null, "Что уйдёт в модель"),
+          h("strong", null, "Готовый контекст запроса"),
+          sendPreview.dataEstimate ? h("div", { style: styles.context }, "Выборка ещё не получена. Она добавится после подтверждения; ниже только уже готовая структура.") : null,
           h("div", { style: styles.context }, `Диапазон дашборда: ${(sendPreview.timeRange && sendPreview.timeRange.from) || "не задан"} — ${(sendPreview.timeRange && sendPreview.timeRange.to) || "не задан"}`),
           h("pre", { style: styles.pre }, (() => { try { return JSON.stringify(JSON.parse(sendPreview.contextJson), null, 2); } catch (_) { return sendPreview.contextJson; } })())
         ) : null,
@@ -2325,38 +2468,59 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
       h("div", { style: styles.footer },
         h("details", { style: styles.actionsPanel, "data-testid": "tech-ai-actions-panel" },
           h("summary", { style: { cursor: "pointer", fontWeight: 600 } }, "Действия"),
-          h("div", { style: { paddingTop: 8 } },
+          h("div", { style: { paddingTop: 8, maxHeight: 130, overflowY: "auto" } },
             h("div", { style: styles.actionBar }, quickPrompts.map((action) =>
               h("button", { key: action.label, type: "button", style: Object.assign({}, styles.button, { flex: "1 1 auto" }), disabled: busy || !ready, onClick: () => action.investigation ? openInvestigation(action) : prepareSend(action.prompt, action) }, action.label)
             )),
-            history.length || busy ? h("div", { style: { display: "flex", justifyContent: "flex-end" } },
-              h("button", { type: "button", style: styles.linkButton, onClick: newDialog }, "Новый диалог")
+            history.length || busy ? h("div", { style: { display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" } },
+              h("button", { type: "button", style: styles.linkButton, disabled: busy, onClick: () => exportDialog(false) }, "Копировать диалог"),
+              h("button", { type: "button", style: styles.linkButton, disabled: busy, onClick: () => exportDialog(true), "data-testid": "tech-ai-export" }, "Экспорт Markdown"),
+              h("button", { type: "button", style: styles.linkButton, disabled: busy, onClick: newDialog }, "Новый диалог")
             ) : null
           )
         ),
-        sendPreview ? h("div", { style: styles.confirm, "data-testid": "tech-ai-send-preview" },
+        sendPreview ? h("div", { style: Object.assign({}, styles.confirm, { maxHeight: 190, overflowY: "auto" }), "data-testid": "tech-ai-send-preview" },
           h("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" } },
             h("strong", { style: { marginRight: "auto", fontSize: 13 } }, "Проверьте и отправьте"),
             h("button", { type: "button", style: styles.primaryButton, disabled: busy, onClick: () => send(sendPreview.prompt, sendPreview.action) }, "Отправить"),
             h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: () => setSendPreview(undefined) }, "Отмена")
           ),
+          h("div", null, `Модель: ${sendPreview.model || "не задана"}`),
+          h("label", null, "Данные для этого запроса: ", h("select", { value: sendPreview.dataMode, "data-testid": "tech-ai-data-mode", onChange: (event) => changeDataMode(event.target.value) },
+            h("option", { value: "structure" }, "Только структура"),
+            h("option", { value: "sample", disabled: settings.includePanelData === false || !Number(settings.explainSampleRows) }, "Короткий пример"),
+            h("option", { value: "investigation" }, "Расследование: настроить диапазон")
+          )),
           h("div", null, `Панели: ${sendPreview.panels.length ? sendPreview.panels.slice(0, 3).map((panel) => panel.title || `#${panel.id}`).join(", ") + (sendPreview.panels.length > 3 ? ` и ещё ${sendPreview.panels.length - 3}` : "") : "нет"} · ≈${(sendPreview.estimatedTokens / 1000).toFixed(1)}k ток.`),
           h("div", null, sendPreview.dataEstimate
             ? `Будет получен пример: ${sendPreview.dataEstimate.datasourceRequests} HTTP-запросов, до ${sendPreview.dataEstimate.targetQueries} запросов панелей, ${sendPreview.dataPlan.sampleRows || "настроенный лимит"} строк/точек.`
             : sendPreview.snapshotAt ? `Используются уже полученные данные на ${new Date(sendPreview.snapshotAt).toLocaleTimeString()}, повторных запросов к datasource не будет.` : "Повторных запросов к datasource не будет."),
           sendPreview.screenshot ? h("div", null, "Снимок включён: браузер попросит выбрать вкладку или экран.") : null,
+          sendPreview.attachments.length ? h("div", null, `Вложения: ${sendPreview.attachments.map((item) => `${item.name} (${Math.ceil(item.bytes / 1024)} КБ)`).join(", ")}. Изображения отправляются выбранной модели; она должна уметь их принимать.`) : null,
           h("div", { style: styles.context },
             "Enter ещё раз тоже отправит. ",
             h("button", { type: "button", style: styles.linkButton, onClick: () => setTab("context") }, "Что уйдёт в модель")
           )
         ) : null,
+        editTurn ? h("div", { style: styles.context }, "Редактирование вопроса: следующие сообщения будут заменены после отправки. ", h("button", { type: "button", style: styles.linkButton, onClick: () => { setEditTurn(undefined); setInput(""); setSendPreview(undefined); } }, "Отменить")) : null,
+        h("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12 } },
+          h("input", { ref: fileRef, type: "file", multiple: true, accept: ".png,.jpg,.jpeg,.log,.txt,.json,.md", style: { display: "none" }, "data-testid": "tech-ai-file-input", onChange: (event) => { addFiles(event.target.files); event.target.value = ""; } }),
+          h("button", { type: "button", style: styles.smallButton, disabled: busy || readingFiles, onClick: () => fileRef.current.click() }, readingFiles ? "Читаем файлы…" : "Прикрепить файл"),
+          h("span", { style: styles.context }, "PNG/JPEG, LOG/TXT/JSON/MD · можно вставить или перетащить")
+        ),
+        attachments.length ? h("div", { style: { display: "flex", gap: 6, maxHeight: 70, overflowY: "auto", flexWrap: "wrap" }, "data-testid": "tech-ai-attachments" }, attachments.map((item) => h("div", { key: item.id, style: { display: "flex", gap: 6, alignItems: "center", padding: 4, border: "1px solid rgba(128,128,128,.3)", borderRadius: 6, minWidth: 0, fontSize: 12 } },
+          item.kind === "image" ? h("img", { src: item.dataUrl, alt: item.name, style: { width: 40, height: 32, objectFit: "contain" } }) : null,
+          h("span", { style: { overflowWrap: "anywhere" } }, `${item.name} · ${Math.ceil(item.bytes / 1024)} КБ`),
+          h("button", { type: "button", style: styles.linkButton, disabled: busy, "aria-label": `Удалить ${item.name}`, onClick: () => { setAttachments((current) => current.filter((file) => file.id !== item.id)); setSendPreview(undefined); } }, "×")
+        ))) : null,
         h("div", { style: styles.composer },
           h("textarea", {
             style: styles.textarea,
             value: input,
-            disabled: busy || !ready,
+            disabled: busy || !ready || readingFiles,
             placeholder: "Например: исправь PromQL этой панели",
             onChange: (event) => { setInput(event.target.value); setSendPreview(undefined); },
+            onPaste: (event) => { if (event.clipboardData && event.clipboardData.files.length) { event.preventDefault(); addFiles(event.clipboardData.files); } },
             onKeyDown: (event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -2366,7 +2530,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom"], function (gr
           }),
           busy
             ? h("button", { type: "button", style: styles.stopButton, onClick: stop }, "Стоп")
-            : h("button", { type: "button", style: styles.button, disabled: !input.trim() || !ready, onClick: () => prepareSend() }, "Отправить")
+            : h("button", { type: "button", style: styles.button, disabled: !input.trim() || !ready || readingFiles, onClick: () => prepareSend() }, "Отправить")
         )
       )
     );
