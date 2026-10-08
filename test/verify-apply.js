@@ -9,7 +9,10 @@ let testStage = 'launch';
     args: ['--no-sandbox', '--disable-dev-shm-usage'],
   });
   const page = await browser.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
   page.setDefaultNavigationTimeout(60000);
+  await page.setCacheEnabled(false);
   await page.setViewport({ width: 1500, height: 900 });
   await page.setRequestInterception(true);
   page.on('request', (request) => {
@@ -74,21 +77,29 @@ let testStage = 'launch';
       const save = await fetch('/crf/dashboard/api/dashboards/db', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dashboard: latest.dashboard, overwrite: false }) });
       if (!save.ok) throw new Error(`Concurrent test update failed: ${save.status}`);
     });
-    page.once('dialog', (dialog) => dialog.accept());
+    const dialogs = [];
+    page.on('dialog', (dialog) => { dialogs.push(dialog.type()); dialog.accept(); });
+    page.removeAllListeners('request');
+    await page.setRequestInterception(false);
     testStage = 'apply and reload';
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
       page.click('[data-testid="tech-ai-apply-proposal"]'),
     ]);
     testStage = 'verify saved targets';
-    await page.waitForSelector('#tech-ai-assistant-launcher', { timeout: 60000 });
+    try { await page.waitForSelector('#tech-ai-assistant-launcher', { timeout: 60000 }); }
+    catch (error) {
+      console.error('reload-state=' + JSON.stringify({ url: page.url(), errors: pageErrors, dialogs, state: await page.evaluate(() => ({ ready: document.readyState, title: document.title, headings: [...document.querySelectorAll('h1,h2')].map((node) => node.textContent) })) }));
+      await page.screenshot({ path: '/test-results/apply-failure.png' });
+      throw error;
+    }
     const targets = await page.evaluate(async () => {
       const response = await fetch('/crf/dashboard/api/dashboards/uid/tech-ai-apply-test');
       const data = await response.json();
       return data.dashboard.panels[0].targets;
     });
     if (targets[0].expr !== '{service_name="keycloak"} |= "error"' || targets[0].legendFormat !== 'preserve-options' || targets[1].expr !== '{service_name="keycloak"} |= "concurrent"') throw new Error(`Unexpected saved targets: ${JSON.stringify(targets)}`);
-    console.log('apply-test=ok');
+    console.log('apply-test=ok; dialogs=' + dialogs.join(','));
   } finally {
     const cleanup = await browser.newPage();
     await cleanup.goto('http://tech-ai-grafana-test:3000/crf/dashboard/api/health', { waitUntil: 'domcontentloaded' });
