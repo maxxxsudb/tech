@@ -4,9 +4,11 @@ const puppeteer = require('puppeteer');
   const browser = await puppeteer.launch({
     executablePath: '/usr/bin/chromium',
     headless: true,
+    timeout: 60000,
     args: ['--no-sandbox', '--disable-dev-shm-usage'],
   });
   const page = await browser.newPage();
+  page.setDefaultNavigationTimeout(60000);
   await page.setViewport({ width: 1500, height: 900 });
   await page.setRequestInterception(true);
   page.on('request', (request) => {
@@ -47,6 +49,7 @@ const puppeteer = require('puppeteer');
     await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true, timeout: 30000 });
     await page.click('#tech-ai-assistant-launcher');
     await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
+    await page.$eval('[data-testid="tech-ai-actions-panel"]', (node) => { node.open = true; });
     await page.evaluate(() => {
       const drawer = document.querySelector('#tech-ai-assistant-drawer');
       [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Исправить запрос').click();
