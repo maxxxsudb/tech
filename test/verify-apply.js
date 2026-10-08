@@ -1,4 +1,5 @@
 const puppeteer = require('puppeteer');
+let testStage = 'launch';
 
 (async () => {
   const browser = await puppeteer.launch({
@@ -21,6 +22,7 @@ const puppeteer = require('puppeteer');
     } else request.continue();
   });
   await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/login', { waitUntil: 'domcontentloaded' });
+  testStage = 'login and create';
   await page.evaluate(async () => {
     const login = await fetch('/crf/dashboard/login', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user: 'admin', password: 'admin' }),
@@ -45,6 +47,7 @@ const puppeteer = require('puppeteer');
     if (!create.ok) throw new Error(`Create dashboard failed: ${create.status}`);
   });
   try {
+    testStage = 'open dashboard';
     await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/d/tech-ai-apply-test/test?from=now-1h&to=now', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true, timeout: 30000 });
     await page.click('#tech-ai-assistant-launcher');
@@ -57,12 +60,14 @@ const puppeteer = require('puppeteer');
     await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true, timeout: 10000 });
     await page.click('[data-testid="tech-ai-send-preview"] button');
     await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('Применить к дашборду'), { timeout: 60000 });
+    testStage = 'select targets';
     await page.$eval('[data-testid="tech-ai-proposal-diff"]', (node) => {
       node.open = true;
       const targets = node.querySelectorAll('input[type="checkbox"]');
       if (targets.length !== 2) throw new Error('Expected two target controls');
       targets[1].click();
     });
+    testStage = 'concurrent update';
     await page.evaluate(async () => {
       const latest = await (await fetch('/crf/dashboard/api/dashboards/uid/tech-ai-apply-test')).json();
       latest.dashboard.panels[0].targets[1].expr = '{service_name="keycloak"} |= "concurrent"';
@@ -70,10 +75,13 @@ const puppeteer = require('puppeteer');
       if (!save.ok) throw new Error(`Concurrent test update failed: ${save.status}`);
     });
     page.once('dialog', (dialog) => dialog.accept());
+    testStage = 'apply and reload';
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
       page.click('[data-testid="tech-ai-apply-proposal"]'),
     ]);
+    testStage = 'verify saved targets';
+    await page.waitForSelector('#tech-ai-assistant-launcher', { timeout: 60000 });
     const targets = await page.evaluate(async () => {
       const response = await fetch('/crf/dashboard/api/dashboards/uid/tech-ai-apply-test');
       const data = await response.json();
@@ -89,6 +97,7 @@ const puppeteer = require('puppeteer');
     await browser.close();
   }
 })().catch((error) => {
+  console.error(`apply-test stage=${testStage}`);
   console.error(error.stack || error);
   process.exit(1);
 });
