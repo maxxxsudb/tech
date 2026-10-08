@@ -16,7 +16,7 @@ const puppeteer = require('puppeteer');
       request.respond({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ choices: [{ message: { content: '```dashboard-json\n{"panelId":1,"targets":[{"datasource":{"type":"loki","uid":"loki"},"expr":"{service_name=\\"keycloak\\"} |= \\"error\\"","refId":"A"}]}\n```' } }] }),
+        body: JSON.stringify({ choices: [{ message: { content: '```dashboard-json\n{"panelId":1,"targets":[{"expr":"{service_name=\\"keycloak\\"} |= \\"error\\"","refId":"A"},{"expr":"{service_name=\\"keycloak\\"} |= \\"warn\\"","refId":"B"}]}\n```' } }] }),
       });
     } else request.continue();
   });
@@ -37,7 +37,7 @@ const puppeteer = require('puppeteer');
           title: 'Tech AI apply test',
           schemaVersion: 42,
           version: 0,
-          panels: [{ id: 1, title: 'Logs', type: 'logs', datasource: { type: 'loki', uid: 'loki' }, targets: [{ datasource: { type: 'loki', uid: 'loki' }, expr: '{service_name="keycloak"}', refId: 'A' }], gridPos: { h: 8, w: 24, x: 0, y: 0 } }],
+          panels: [{ id: 1, title: 'Logs', type: 'logs', datasource: { type: 'loki', uid: 'loki' }, targets: [{ datasource: { type: 'loki', uid: 'loki' }, expr: '{service_name="keycloak"}', refId: 'A', legendFormat: 'preserve-options' }, { datasource: { type: 'loki', uid: 'loki' }, expr: '{service_name="keycloak"} |= "keep"', refId: 'B' }], gridPos: { h: 8, w: 24, x: 0, y: 0 } }],
           time: { from: 'now-1h', to: 'now' },
         },
       }),
@@ -57,20 +57,29 @@ const puppeteer = require('puppeteer');
     await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true, timeout: 10000 });
     await page.click('[data-testid="tech-ai-send-preview"] button');
     await page.waitForFunction(() => document.querySelector('#tech-ai-assistant-drawer').innerText.includes('Применить к дашборду'), { timeout: 60000 });
+    await page.$eval('[data-testid="tech-ai-proposal-diff"]', (node) => {
+      node.open = true;
+      const targets = node.querySelectorAll('input[type="checkbox"]');
+      if (targets.length !== 2) throw new Error('Expected two target controls');
+      targets[1].click();
+    });
+    await page.evaluate(async () => {
+      const latest = await (await fetch('/crf/dashboard/api/dashboards/uid/tech-ai-apply-test')).json();
+      latest.dashboard.panels[0].targets[1].expr = '{service_name="keycloak"} |= "concurrent"';
+      const save = await fetch('/crf/dashboard/api/dashboards/db', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dashboard: latest.dashboard, overwrite: false }) });
+      if (!save.ok) throw new Error(`Concurrent test update failed: ${save.status}`);
+    });
     page.once('dialog', (dialog) => dialog.accept());
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
-      page.evaluate(() => {
-        const drawer = document.querySelector('#tech-ai-assistant-drawer');
-        [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Применить к дашборду').click();
-      }),
+      page.click('[data-testid="tech-ai-apply-proposal"]'),
     ]);
-    const expression = await page.evaluate(async () => {
+    const targets = await page.evaluate(async () => {
       const response = await fetch('/crf/dashboard/api/dashboards/uid/tech-ai-apply-test');
       const data = await response.json();
-      return data.dashboard.panels[0].targets[0].expr;
+      return data.dashboard.panels[0].targets;
     });
-    if (expression !== '{service_name="keycloak"} |= "error"') throw new Error(`Unexpected saved expression: ${expression}`);
+    if (targets[0].expr !== '{service_name="keycloak"} |= "error"' || targets[0].legendFormat !== 'preserve-options' || targets[1].expr !== '{service_name="keycloak"} |= "concurrent"') throw new Error(`Unexpected saved targets: ${JSON.stringify(targets)}`);
     console.log('apply-test=ok');
   } finally {
     const cleanup = await browser.newPage();

@@ -15,7 +15,7 @@ const assert = require('node:assert/strict');
     page.on('pageerror', (error) => pageErrors.push(error.message));
     await page.setRequestInterception(true);
     page.on('request', (request) => {
-      if (request.url().includes('/api/ds/query')) datasourceCalls++;
+      if (new URL(request.url()).pathname.endsWith('/api/ds/query') && !new URL(request.url()).search) datasourceCalls++;
       if (!request.url().includes('/api/plugin-proxy/tech-ai-assistant-app/')) return request.continue();
       requests.push(JSON.parse(request.postData()));
       request.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { role: 'assistant', content: `RELEASE080-${requests.length}\n` + 'Длинный ответ для проверки прокрутки.\n'.repeat(35) } }], usage: { prompt_tokens: 100, completion_tokens: 50 } }) });
@@ -36,6 +36,7 @@ const assert = require('node:assert/strict');
     await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true });
     await page.click('#tech-ai-assistant-launcher');
     await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true });
+    await page.waitForNetworkIdle({ idleTime: 750, timeout: 30000 });
     const clickText = async (text) => page.evaluate((text) => {
       const button = [...document.querySelectorAll('#tech-ai-assistant-drawer button')].find((button) => button.textContent.trim() === text);
       if (!button) throw new Error(`No button ${text}`);

@@ -1783,7 +1783,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         proposal.targets.map((target, index) => {
           const id = queryTools.targetId(target, index);
           const before = current.find((item) => item.refId === target.refId) || (!target.refId ? current[index] : undefined);
-          const datasource = target.datasource || (props.panel && props.panel.datasource);
+          const datasource = target.datasource || (before && before.datasource) || (props.panel && props.panel.datasource);
           const url = exploreUrl(props.context, datasource, target);
           return h("div", { key: id, style: { marginTop: 10 } },
             h("label", null, h("input", { type: "checkbox", checked: selected.includes(id), disabled: props.busy, onChange: (event) => setSelected((ids) => event.target.checked ? ids.concat([id]) : ids.filter((item) => item !== id)) }), ` Запрос ${target.refId || index + 1}`),
@@ -1797,7 +1797,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       h("div", { style: styles.quickActions },
         h("button", { type: "button", style: styles.smallButton, disabled: !selected.length, onClick: () => copyText(JSON.stringify(chosen, null, 2)) }, "Копировать JSON"),
         editor ? h("a", { href: editor, target: "_blank", rel: "noreferrer", style: Object.assign({}, styles.smallButton, { display: "inline-flex", alignItems: "center" }) }, "Редактор панели") : null,
-        h("button", { type: "button", style: styles.button, disabled: props.busy || !selected.length, onClick: () => props.onApply(chosen) }, "Применить к дашборду")
+        h("button", { type: "button", style: styles.button, "data-testid": "tech-ai-apply-proposal", disabled: props.busy || !selected.length, onClick: () => props.onApply(chosen) }, "Применить к дашборду")
       ),
       h("div", { style: styles.context }, "Применяются только отмеченные запросы. Остальные сохраняются. Редактор открывает текущую панель без сохранения изменений.")
     );
@@ -1970,7 +1970,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     // обычный вопрос после них переиспользует снимок, а если сменились диапазон, переменные или панели
     // либо нажато «Обновить данные», снимает их заново по тому же плану.
     function effectiveDataPlan(action, selectedContext) {
-      if (action && action.dataMode === "structure") return undefined;
+      if (action && (action.dataMode === "structure" || action.collectPanelData === false)) return undefined;
       if (action && action.dataMode === "sample") return samplePlanFor({ sampleData: true });
       const explicit = (action && action.dataPlan) || samplePlanFor(action);
       if (explicit) return explicit;
@@ -2019,7 +2019,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         dataEstimate: fetchesData ? investigationEstimate(settings, selectedContext, dataPlan) : undefined,
         snapshotAt: reusesSnapshot ? previous.at : undefined,
         screenshot: screenshotOn,
-        attachments: attachmentTools.summaries(attachments),
+        attachments: (action.attachmentSummaries || []).concat(attachmentTools.summaries(attachments)),
         dataMode: action.dataMode || (dataPlan ? dataPlan.sampleRows ? "sample" : "investigation" : "structure"),
         model: modelName(settings),
       });
@@ -2045,7 +2045,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     function changeDataMode(mode) {
       const preview = sendPreview;
       if (!preview) return;
-      const action = Object.assign({}, preview.action, { prompt: preview.prompt, dataMode: mode, dataPlan: undefined });
+      const action = Object.assign({}, preview.action, { prompt: preview.prompt, dataMode: mode, dataPlan: undefined, collectPanelData: mode !== "structure", queries: false });
       setSendPreview(undefined);
       if (mode === "investigation") openInvestigation(action);
       else {
@@ -2124,7 +2124,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       setInvestigationSetup(undefined);
       send(setup.action.prompt, Object.assign({}, setup.action, {
         queries: setup.allowQueries,
-        dataMode: setup.collectPanelData ? "investigation" : "structure",
+        dataMode: setup.collectPanelData || setup.allowQueries ? "investigation" : "structure",
+        collectPanelData: setup.collectPanelData,
         dataPlan: setup.collectPanelData ? {
           rangeHours: Number(setup.rangeHours) || 0,
           maxPanels: Number(setup.maxPanels) || 1,
@@ -2215,14 +2216,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           data: panelDataStats((snapshot && snapshot.panelData) || []),
           dataRange: snapshot && snapshot.range,
           screenshot: screenshot ? { format: "JPEG", width: screenshot.width, height: screenshot.height, bytes: screenshot.bytes, transport: imageTransportLabels[settings.imageTransport || defaults.imageTransport] } : undefined,
-          attachments: attachmentTools.summaries(requestFiles),
+          attachments: userMessage.attachments,
           comparisonRange: snapshot && snapshot.comparisonRange,
           model: modelName(settings),
         };
         setLastRequest(request);
         const messages = plan.messages.concat([attachmentTools.buildUserMessage(modelPrompt, imageFiles, settings.imageTransport, imageUserMessage)]);
         const result = await runAssistant(settings, requestContext, plan.contextJson, messages, {
-          queries: Boolean(action && action.queries),
+          queries: Boolean(action && action.queries && action.dataMode !== "structure"),
           signal: controller.signal,
           onUpdate: (update) => {
             if (firstTokenMs === undefined && (update.content || update.reasoning)) firstTokenMs = Date.now() - started;
@@ -2398,7 +2399,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         h("label", { style: styles.attachment }, h("input", { type: "checkbox", checked: investigationSetup.allowQueries, onChange: (event) => setInvestigationSetup(Object.assign({}, investigationSetup, { allowQueries: event.target.checked })) }), " Разрешить модели дополнительные read-only запросы"),
         h("div", { style: styles.context }, investigationSetup.collectPanelData
           ? `Будет: ${investigationStats.datasourceRequests * (investigationSetup.comparePeriods ? 2 : 1)} HTTP-запросов к datasource, до ${investigationStats.targetQueries * (investigationSetup.comparePeriods ? 2 : 1)} запросов панелей; фактический диапазон ${new Date(investigationStats.from).toLocaleString()} — ${new Date(investigationStats.to).toLocaleString()}.` + (investigationSetup.comparePeriods ? ` Предыдущий период: ${new Date(investigationStats.from - (investigationStats.to - investigationStats.from)).toLocaleString()} — ${new Date(investigationStats.from).toLocaleString()}.` : "")
-          : "Повторных запросов не будет: в модель уйдут только структура дашборда и тексты запросов."),
+          : investigationSetup.allowQueries ? "Начальная выборка не запрашивается. Модель сможет выполнить дополнительные read-only запросы в настроенных лимитах." : "Повторных запросов не будет: в модель уйдут только структура дашборда и тексты запросов."),
         h("div", { style: styles.quickActions },
           h("button", { type: "button", style: styles.button, disabled: busy, onClick: startInvestigation }, "Начать расследование"),
           h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: () => setInvestigationSetup(undefined) }, "Отмена")
