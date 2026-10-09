@@ -207,13 +207,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     "@media(max-width:480px) { .tech-ai-root .tech-ai-period-chip { display:none; } }",
     ".tech-ai-root .tech-ai-quiet:not(:disabled):hover { opacity:1; filter:none; border-color:transparent; background:rgba(128,128,128,.14); }",
     ".tech-ai-answer a.tech-ai-panel-link { text-decoration:none; border-bottom:1px dashed currentColor; cursor:pointer; } .tech-ai-answer a.tech-ai-panel-link::before { content:'▦ '; font-size:.85em; opacity:.8; }",
-    ".tech-ai-root .tech-ai-charts { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:8px; margin-top:4px; } .tech-ai-root .tech-ai-charts-caption { margin-top:12px; font-size:11px; opacity:.6; }",
-    ".tech-ai-root .tech-ai-chart-card { min-width:0; padding:8px 10px 7px; border:1px solid rgba(128,128,128,.22); border-radius:8px; background:rgba(128,128,128,.04); cursor:pointer; transition:border-color .12s; }",
-    ".tech-ai-root .tech-ai-chart-card:hover,.tech-ai-root .tech-ai-chart-card:focus-visible { border-color:#5794f2; outline:none; }",
-    ".tech-ai-root .tech-ai-chart-title { font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".tech-ai-root .tech-ai-charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr)); gap:10px; margin-top:10px; } .tech-ai-root .tech-ai-charts-caption { margin-top:12px; font-size:12px; color:var(--tech-ai-muted); } .tech-ai-root .tech-ai-charts-caption summary { cursor:pointer; padding:4px 0; }",
+    ".tech-ai-root .tech-ai-chart-card { min-width:0; padding:12px; border:1px solid rgba(128,128,128,.22); border-radius:8px; background:rgba(128,128,128,.04); }",
+    ".tech-ai-root .tech-ai-chart-title:hover { color:var(--tech-ai-link); } .tech-ai-root .tech-ai-chart-title:focus-visible { outline:2px solid #5794f2; outline-offset:2px; }",
+    ".tech-ai-root .tech-ai-chart-title { display:block; max-width:100%; padding:0; border:0; background:none; color:inherit; text-align:left; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }",
     ".tech-ai-root .tech-ai-chart-series { font-size:11px; opacity:.65; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".tech-ai-root .tech-ai-chart-card svg { margin:6px 0 4px; }",
-    ".tech-ai-root .tech-ai-chart-stats { display:flex; flex-wrap:wrap; gap:2px 10px; font-size:11px; opacity:.8; font-variant-numeric:tabular-nums; } .tech-ai-root .tech-ai-chart-peak { color:#e02f44; opacity:1; font-weight:600; }",
+    ".tech-ai-root .tech-ai-chart-stats { display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; font-variant-numeric:tabular-nums; } .tech-ai-root .tech-ai-chart-peak { font-weight:600; } .tech-ai-root .tech-ai-chart-range { margin-top:8px; font-size:10px; color:var(--tech-ai-muted); overflow-wrap:anywhere; }",
     ".tech-ai-panel-highlight { outline:3px solid #5794f2 !important; outline-offset:2px; border-radius:4px; animation:tech-ai-panel-flash 2.4s ease-out; }",
     "@keyframes tech-ai-panel-flash { 0%,30% { box-shadow:0 0 0 8px rgba(87,148,242,.35); } 100% { box-shadow:0 0 0 0 rgba(87,148,242,0); } }",
   ].join("\n");
@@ -742,21 +742,63 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
 
   // Прореженный ряд для мини-графика: в каждом интервале минимум и максимум, чтобы пики не терялись.
   function sparkPoints(points, limit) {
-    limit = limit || 60;
-    if (points.length <= limit) return points.map((point) => [Number(point[0]), roundValue(point[1])]);
-    const buckets = Math.floor(limit / 2);
-    const size = points.length / buckets;
-    const result = [];
-    for (let bucket = 0; bucket < buckets; bucket += 1) {
-      const slice = points.slice(Math.floor(bucket * size), Math.floor((bucket + 1) * size));
-      if (!slice.length) continue;
-      let low = slice[0];
-      let high = slice[0];
-      slice.forEach((point) => { if (point[1] < low[1]) low = point; if (point[1] > high[1]) high = point; });
-      (Number(low[0]) <= Number(high[0]) ? [low, high] : [high, low]).forEach((point) => {
-        if (!result.length || result[result.length - 1][0] !== Number(point[0])) result.push([Number(point[0]), roundValue(point[1])]);
-      });
+    limit = Math.max(1, Math.floor(Number(limit) || 60));
+    const source = (points || []).filter((point) => Number.isFinite(Number(point[0])))
+      .map((point) => [Number(point[0]), typeof point[1] === "number" && Number.isFinite(point[1]) ? roundValue(point[1]) : null])
+      .sort((a, b) => a[0] - b[0]);
+    if (source.length <= limit) return source;
+    if (limit === 1) return [source[0]];
+    const nextGap = [];
+    let gap = source.length;
+    for (let index = source.length - 1; index >= 0; index -= 1) {
+      if (source[index][1] === null) gap = index;
+      nextGap[index] = gap;
     }
+    const selected = new Set([0, source.length - 1]);
+    const encode = (indices) => {
+      const ordered = Array.from(indices).sort((a, b) => a - b);
+      const result = [];
+      ordered.forEach((index, position) => {
+        const previous = ordered[position - 1];
+        if (position && source[previous][1] !== null && source[index][1] !== null && nextGap[previous + 1] < index) result.push(source[nextGap[previous + 1]]);
+        result.push(source[index]);
+      });
+      return result;
+    };
+    let result = encode(selected);
+    // Two slots cannot show both numeric edges and an intervening gap honestly.
+    if (result.length > limit) return [source[0], [source[source.length - 1][0], null]];
+    const add = (index) => {
+      if (index === undefined || selected.has(index)) return;
+      selected.add(index);
+      const candidate = encode(selected);
+      if (candidate.length <= limit) result = candidate;
+      else selected.delete(index);
+    };
+    let minimum;
+    let maximum;
+    source.forEach((point, index) => {
+      if (point[1] === null) return;
+      if (minimum === undefined || point[1] < source[minimum][1]) minimum = index;
+      if (maximum === undefined || point[1] > source[maximum][1]) maximum = index;
+    });
+    add(maximum);
+    add(minimum);
+    const buckets = Math.max(1, Math.floor((limit - 2) / 2));
+    const size = source.length / buckets;
+    const candidates = [];
+    for (let bucket = 0; bucket < buckets; bucket += 1) {
+      let low;
+      let high;
+      for (let index = Math.floor(bucket * size); index < Math.floor((bucket + 1) * size); index += 1) {
+        if (source[index][1] === null) continue;
+        if (low === undefined || source[index][1] < source[low][1]) low = index;
+        if (high === undefined || source[index][1] > source[high][1]) high = index;
+      }
+      candidates.push(low < high ? [low, high] : [high, low]);
+    }
+    candidates.forEach((pair) => add(pair[0]));
+    candidates.forEach((pair) => add(pair[1]));
     return result;
   }
 
@@ -779,7 +821,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     });
     const first = points[0];
     const last = points[points.length - 1];
-    if (charts && points.length > 1) charts.push({ name: result.name, unit: result.unit, points: sparkPoints(points), min: roundValue(min[1]), max: roundValue(max[1]), maxAt: Number(max[0]), avg: roundValue(sum / points.length), last: roundValue(last[1]) });
+    if (charts && points.length > 1) {
+      const chartPoints = times.map((time, index) => [Number(time), typeof values[index] === "number" && Number.isFinite(values[index]) ? values[index] : null])
+        .filter((point) => Number.isFinite(point[0])).sort((a, b) => a[0] - b[0]);
+      if (chartPoints.length > 1) charts.push({ name: result.name, unit: result.unit, points: sparkPoints(chartPoints), min: roundValue(min[1]), minAt: Number(min[0]), max: roundValue(max[1]), maxAt: Number(max[0]), avg: roundValue(sum / points.length), first: roundValue(first[1]), last: roundValue(last[1]), firstAt: chartPoints[0][0], lastAt: chartPoints[chartPoints.length - 1][0] });
+    }
     return Object.assign(result, {
       min: roundValue(min[1]),
       minAt: pointTime(min[0]),
@@ -836,6 +882,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       error: result.error || (firstMeta && firstMeta.custom && firstMeta.custom.error) || undefined,
     };
     const series = [];
+    const seriesCharts = new Map();
     const tables = [];
     let from;
     let to;
@@ -854,7 +901,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         to = to === undefined ? end : Math.max(to, end);
       }
       fields.forEach((field, index) => {
-        if (index !== timeIndex) series.push(summarizeSeries(field, schema, times, values[index] || [], limits.recent, charts));
+        if (index === timeIndex) return;
+        const localCharts = charts ? [] : undefined;
+        const item = summarizeSeries(field, schema, times, values[index] || [], limits.recent, localCharts);
+        series.push(item);
+        if (localCharts && localCharts.length) seriesCharts.set(item, localCharts[0]);
       });
     });
     if (series.length) {
@@ -862,6 +913,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       summary.series = series.length > limits.series
         ? series.slice().sort((a, b) => (Number(b.max) || 0) - (Number(a.max) || 0)).slice(0, limits.series)
         : series;
+      if (charts) summary.series.forEach((item) => { if (seriesCharts.has(item)) charts.push(seriesCharts.get(item)); });
       if (series.length > limits.series) summary.seriesNote = `Показаны ${limits.series} серий с наибольшим max из ${series.length}`;
     }
     if (tables.length) summary.tables = tables;
@@ -1049,10 +1101,15 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           title: panel.title,
           datasourceUid: datasourceUid(panel, queries[0]),
           queries: queries.map(compactQuery),
-          results: Object.keys(results).map((refId) => ({ refId, result: summarizeQueryResult(results[refId], limits, series) })),
+          results: Object.keys(results).map((refId) => {
+            const queryCharts = series ? [] : undefined;
+            const result = summarizeQueryResult(results[refId], limits, queryCharts);
+            if (queryCharts) series.push(...queryCharts.map((chart) => Object.assign({ refId }, chart)));
+            return { refId, result };
+          }),
         };
         // Ряды для мини-графиков идут отдельно от panelData и в модель не попадают.
-        if (series && series.length) options.charts.push({ panelId: panel.id, title: panel.title, type: panel.type, series: series.sort((a, b) => (Number(b.max) || 0) - (Number(a.max) || 0)).slice(0, 3) });
+        if (series && series.length) options.charts.push({ panelId: panel.id, title: panel.title, type: panel.type, series: series.slice(0, 3) });
         const skippedTargets = panelTargets(settings, panel).length - targets.length;
         if (skippedTargets > 0) item.note = `Выполнены первые ${targets.length} запросов панели, ещё ${skippedTargets} пропущено лимитом`;
         return item;
@@ -1969,6 +2026,12 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   function formatChartValue(value, unit) {
     const number = Number(value);
     if (!Number.isFinite(number)) return String(value);
+    if (typeof grafanaData.getValueFormat === "function") {
+      try {
+        const formatted = grafanaData.getValueFormat(unit || "short")(number);
+        if (formatted && formatted.text != null) return `${formatted.prefix || ""}${formatted.text}${formatted.suffix || ""}`;
+      } catch (_) {}
+    }
     const compact = (n) => {
       const abs = Math.abs(n);
       if (abs >= 1e9) return `${Number((n / 1e9).toPrecision(3))}G`;
@@ -1979,21 +2042,32 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     if (unit === "percent") return `${compact(number)}%`;
     if (unit === "percentunit") return `${compact(number * 100)}%`;
     if (unit === "bytes" || unit === "decbytes") {
-      const base = unit === "bytes" ? 1024 : 1000, names = ["B", "KB", "MB", "GB", "TB"];
+      const base = unit === "bytes" ? 1024 : 1000, names = unit === "bytes" ? ["B", "KiB", "MiB", "GiB", "TiB"] : ["B", "KB", "MB", "GB", "TB"];
       let size = number, index = 0;
       while (Math.abs(size) >= base && index < names.length - 1) { size /= base; index += 1; }
       return `${Number(size.toPrecision(3))} ${names[index]}`;
     }
-    const suffix = { s: " с", ms: " мс", reqps: " req/s", ops: " ops/s", rps: " req/s" }[unit] || "";
+    const suffix = { s: " с", ms: " мс", reqps: " req/s", ops: " ops/s", rps: " req/s", none: "", short: "" }[unit] ?? (unit ? ` ${unit}` : "");
     return compact(number) + suffix;
   }
 
-  function chartTime(value, spanMs) {
+  function chartTime(value, timezone, full) {
     const date = new Date(Number(value));
     if (!Number.isFinite(date.getTime())) return "";
-    const pad = (n) => String(n).padStart(2, "0");
-    const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-    return spanMs > 36 * 3600e3 ? `${pad(date.getDate())}.${pad(date.getMonth() + 1)} ${time}` : time;
+    const options = Object.assign({ hour: "2-digit", minute: "2-digit", hourCycle: "h23" }, full ? { day: "2-digit", month: "2-digit", year: "numeric" } : null);
+    if (timezone && timezone !== "browser") options.timeZone = timezone;
+    try { return new Intl.DateTimeFormat("ru-RU", options).format(date); }
+    catch (_) { return date.toLocaleString("ru-RU", { hour12: false }); }
+  }
+
+  function chartsForContext(charts, contextJson) {
+    let context;
+    try { context = typeof contextJson === "string" ? JSON.parse(contextJson) : contextJson; }
+    catch (_) { return []; }
+    const time = (value) => typeof value === "number" ? pointTime(value) : value;
+    const signature = (refId, series) => JSON.stringify([String(refId || ""), redactString(series.name || ""), series.unit || "", series.min, series.max, series.avg, series.first, series.last, time(series.minAt), time(series.maxAt)]);
+    const sent = new Map(((context && context.panelData) || []).map((panel) => [Number(panel.panelId), new Set((panel.results || []).flatMap((entry) => ((entry.result && entry.result.series) || []).map((series) => signature(entry.refId, series))))]));
+    return (charts || []).map((chart) => Object.assign({}, chart, { series: (chart.series || []).filter((series) => sent.get(Number(chart.panelId))?.has(signature(series.refId, series))) })).filter((chart) => chart.series.length);
   }
 
   // Какие мини-графики показать: панели, названные в ответе (в порядке упоминания), иначе панели с самым заметным пиком.
@@ -2002,7 +2076,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const available = (charts || []).filter((chart) => chart && (chart.series || []).length);
     if (!available.length) return [];
     const mentioned = [];
-    const html = linkPanelTitles(escapeHtmlText(String(content || "")), (panels || []).concat(available.map((chart) => ({ id: chart.panelId, title: chart.title, type: chart.type }))));
+    const panelNames = (panels || []).concat(available.map((chart) => ({ id: chart.panelId, title: chart.title, type: chart.type })));
+    const html = splitContent(String(content || "")).filter((part) => part.type === "text").map((part) => linkPanelTitles(markdownHtml(part.text), panelNames)).join("");
     html.replace(/data-panel-id="(\d+)"/g, (_, id) => { if (!mentioned.includes(Number(id))) mentioned.push(Number(id)); return _; });
     const byId = new Map(available.map((chart) => [Number(chart.panelId), chart]));
     const named = mentioned.map((id) => byId.get(id)).filter(Boolean);
@@ -2018,18 +2093,57 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   function Sparkline(props) {
     const points = props.points || [];
     const width = 240, height = 48, pad = 3;
-    const times = points.map((point) => Number(point[0])), values = points.map((point) => Number(point[1]));
+    const numeric = points.filter((point) => Number.isFinite(Number(point[0])) && typeof point[1] === "number" && Number.isFinite(point[1]));
+    if (!numeric.length) return null;
+    const times = points.map((point) => Number(point[0])).filter(Number.isFinite), values = numeric.map((point) => point[1]);
     const t0 = Math.min.apply(null, times), t1 = Math.max.apply(null, times);
     const v0 = Math.min.apply(null, values), v1 = Math.max.apply(null, values);
     const x = (t) => pad + (t1 > t0 ? (t - t0) / (t1 - t0) : 0.5) * (width - pad * 2);
     const y = (v) => height - pad - (v1 > v0 ? (v - v0) / (v1 - v0) : 0.5) * (height - pad * 2);
-    const line = points.map((point, index) => `${index ? "L" : "M"}${x(Number(point[0])).toFixed(1)},${y(Number(point[1])).toFixed(1)}`).join(" ");
-    const area = `${line} L${x(t1).toFixed(1)},${height - pad} L${x(t0).toFixed(1)},${height - pad} Z`;
-    const peak = points.reduce((best, point) => (Number(point[1]) > Number(best[1]) ? point : best), points[0] || [0, 0]);
-    return h("svg", { viewBox: `0 0 ${width} ${height}`, width: "100%", height, preserveAspectRatio: "none", "aria-hidden": "true", style: { display: "block", overflow: "visible" } },
+    const segments = [];
+    let segment = [];
+    points.forEach((point) => {
+      if (Number.isFinite(Number(point[0])) && typeof point[1] === "number" && Number.isFinite(point[1])) segment.push(point);
+      else if (segment.length) { segments.push(segment); segment = []; }
+    });
+    if (segment.length) segments.push(segment);
+    const path = (items) => items.map((point, index) => `${index ? "L" : "M"}${x(Number(point[0])).toFixed(1)},${y(point[1]).toFixed(1)}`).join(" ");
+    const line = segments.map(path).join(" ");
+    const area = segments.map((items) => `${path(items)} L${x(Number(items[items.length - 1][0])).toFixed(1)},${height - pad} L${x(Number(items[0][0])).toFixed(1)},${height - pad} Z`).join(" ");
+    const peak = numeric.reduce((best, point) => point[1] > best[1] ? point : best);
+    return h("svg", { "data-testid": "tech-ai-sparkline", viewBox: `0 0 ${width} ${height}`, width: "100%", height, preserveAspectRatio: "none", "aria-hidden": "true", style: { display: "block", overflow: "visible" } },
       h("path", { d: area, fill: "rgba(87,148,242,.14)", stroke: "none" }),
       h("path", { d: line, fill: "none", stroke: "#5794f2", strokeWidth: 1.5, vectorEffect: "non-scaling-stroke", strokeLinejoin: "round" }),
-      h("line", { x1: x(Number(peak[0])), x2: x(Number(peak[0])), y1: pad, y2: height - pad, stroke: "#e02f44", strokeWidth: 1, strokeDasharray: "2 2", vectorEffect: "non-scaling-stroke", opacity: 0.7 })
+      h("line", { x1: x(Number(peak[0])), x2: x(Number(peak[0])), y1: pad, y2: height - pad, stroke: "#5794f2", strokeWidth: 1, strokeDasharray: "2 2", vectorEffect: "non-scaling-stroke", opacity: 0.6 }),
+      segments.filter((items) => items.length === 1).map((items, index) => h("circle", { key: index, cx: x(Number(items[0][0])), cy: y(items[0][1]), r: 2, fill: "#5794f2" }))
+    );
+  }
+
+  function AnswerChartCard(props) {
+    const chart = props.chart;
+    const [selected, setSelected] = React.useState(0);
+    const series = chart.series[Math.min(selected, chart.series.length - 1)];
+    const times = (series.points || []).map((point) => Number(point[0])).filter(Number.isFinite);
+    const from = series.firstAt ?? (times.length ? Math.min.apply(null, times) : undefined);
+    const to = series.lastAt ?? (times.length ? Math.max.apply(null, times) : undefined);
+    let timezone = props.timezone || "browser";
+    if (timezone !== "browser") {
+      try { new Intl.DateTimeFormat("ru-RU", { timeZone: timezone }); }
+      catch (_) { timezone = "browser"; }
+    }
+    const zoneLabel = timezone === "browser" ? "время браузера" : timezone;
+    return h("div", { className: "tech-ai-chart-card", "data-testid": "tech-ai-chart-card" },
+      h("button", { type: "button", className: "tech-ai-chart-title", "data-testid": "tech-ai-chart-open", title: "Показать панель на дашборде", onClick: () => focusPanel(Number(chart.panelId), chart.title) }, chart.title || `Панель ${chart.panelId}`),
+      chart.series.length > 1 ? h("select", { "data-testid": "tech-ai-chart-series-select", "aria-label": `Ряд панели ${chart.title || chart.panelId}`, style: Object.assign({}, styles.input, { width: "100%", minWidth: 0, height: 28, fontSize: 11, marginTop: 8, padding: "2px 6px" }), value: selected, onChange: (event) => setSelected(Number(event.target.value)) },
+        chart.series.map((item, index) => h("option", { key: index, value: index }, `${item.name || "Ряд"}${item.refId ? ` · ${item.refId}` : ""}`))
+      ) : h("div", { className: "tech-ai-chart-series", style: { marginTop: 4 } }, series.name || "Ряд"),
+      h(Sparkline, { points: series.points }),
+      h("div", { className: "tech-ai-chart-stats" },
+        h("span", { className: "tech-ai-chart-peak" }, `макс ${formatChartValue(series.max, series.unit)} в ${chartTime(series.maxAt, timezone, to - from > 36 * 3600e3)}`),
+        h("span", null, `мин ${formatChartValue(series.min, series.unit)}`),
+        h("span", null, `последнее ${formatChartValue(series.last, series.unit)}`)
+      ),
+      h("div", { className: "tech-ai-chart-range", "data-testid": "tech-ai-chart-range" }, `Данные: ${chartTime(from, timezone, true)} — ${chartTime(to, timezone, true)} · ${zoneLabel}${(series.points || []).some((point) => point[1] === null) ? " · есть пропуски" : ""}`)
     );
   }
 
@@ -2037,24 +2151,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const panels = availablePanels(props.context);
     const picked = pickAnswerCharts(props.charts, props.content, panels);
     if (!picked.length) return null;
-    return h("div", { "data-testid": "tech-ai-answer-charts" },
-      h("div", { className: "tech-ai-charts-caption" }, "По данным панелей · клик покажет панель на дашборде"),
-      h("div", { className: "tech-ai-charts" }, picked.map((chart) => {
-        const series = chart.series[0];
-        const times = (series.points || []).map((point) => Number(point[0]));
-        const span = times.length ? Math.max.apply(null, times) - Math.min.apply(null, times) : 0;
-        const open = () => focusPanel(Number(chart.panelId), chart.title);
-        return h("div", { key: chart.panelId, className: "tech-ai-chart-card", role: "button", tabIndex: 0, title: "Показать панель на дашборде", "data-testid": "tech-ai-chart-card", onClick: open, onKeyDown: (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } } },
-          h("div", { className: "tech-ai-chart-title" }, chart.title || `Панель ${chart.panelId}`),
-          chart.series.length > 1 || (series.name && series.name !== chart.title) ? h("div", { className: "tech-ai-chart-series" }, series.name) : null,
-          h(Sparkline, { points: series.points }),
-          h("div", { className: "tech-ai-chart-stats" },
-            h("span", { className: "tech-ai-chart-peak" }, `▲ ${formatChartValue(series.max, series.unit)} в ${chartTime(series.maxAt, span)}`),
-            h("span", null, `мин ${formatChartValue(series.min, series.unit)}`),
-            h("span", null, `в конце ${formatChartValue(series.last, series.unit)}`)
-          )
-        );
-      }))
+    return h("details", { className: "tech-ai-charts-caption", "data-testid": "tech-ai-answer-charts" },
+      h("summary", { title: "Показаны упомянутые в ответе панели (до четырёх); если упоминаний нет — до трёх панелей по изменчивости ряда. Это не ограничивает переданный контекст." }, `Данные к ответу · ${picked.length}${props.charts.length > picked.length ? ` из ${props.charts.length}` : ""}`),
+      h("div", { style: { fontSize: 11, marginTop: 8 } }, `${props.verified ? "Сводки этих рядов переданы модели." : "Старый снимок: состав переданных модели рядов не подтверждён."} Графики построены локально по исходным данным datasource, без преобразований панели.`),
+      h("div", { className: "tech-ai-charts" }, picked.map((chart) => h(AnswerChartCard, { key: chart.panelId, chart, timezone: props.timezone })))
     );
   }
 
@@ -2648,8 +2748,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         if (!isCurrent()) return;
         const calibrated = recordCalibration(settings, result.calibration);
         setLastRequest(Object.assign({}, request, { usage: sumUsage(transcriptionUsage, result.usage), charsPerToken: result.calibration ? calibrated : undefined, totalMs: Date.now() - started, firstTokenMs: settings.streaming !== false ? firstTokenMs : undefined }));
-        const answerCharts = settings.answerCharts !== false && snapshot && (snapshot.charts || []).length ? snapshot.charts : undefined;
-        setHistory((current) => current.concat([{ role: "assistant", content: result.content, reasoning: result.reasoning, steps: result.steps, charts: answerCharts }]));
+        const answerCharts = settings.answerCharts !== false && snapshot ? chartsForContext(snapshot.charts, plan.contextJson) : [];
+        const chartTimezone = selectedContext.timeRange && selectedContext.timeRange.timezone;
+        setHistory((current) => current.concat([{ role: "assistant", content: result.content, reasoning: result.reasoning, steps: result.steps, charts: answerCharts.length ? answerCharts : undefined, chartTimezone, chartsVerified: true }]));
         setAttachments([]);
       } catch (reason) {
         if (!isCurrent()) return;
@@ -2755,7 +2856,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           message.reasoning ? h("details", { style: styles.context }, h("summary", { style: { cursor: "pointer" } }, isPending && !message.content ? "Размышляет…" : "Размышления модели"), h("div", { style: { whiteSpace: "pre-wrap" } }, message.reasoning)) : null,
           (message.steps || []).map((step, stepIndex) => h(StepView, { key: `step-${stepIndex}`, step, context })),
           h(MessageContent, { content: isPending ? stripPendingQueries(content) : content, context }),
-          !isPending && content && (message.charts || []).length && settings && settings.answerCharts !== false ? h(AnswerCharts, { charts: message.charts, content, context }) : null,
+          !isPending && content && (message.charts || []).length && settings && settings.answerCharts !== false ? h(AnswerCharts, { charts: message.charts, content, context, timezone: message.chartTimezone, verified: message.chartsVerified === true }) : null,
           !isPending && content ? h("div", { style: Object.assign({}, styles.quickActions, { marginTop: 6, marginBottom: -4, marginLeft: -6, gap: 2 }), "data-testid": "tech-ai-answer-actions" },
             h("button", { type: "button", className: "tech-ai-quiet", style: styles.quietButton, onClick: () => copyText(content) }, "Копировать"),
             !message.local ? h("button", { type: "button", className: "tech-ai-quiet", style: styles.quietButton, disabled: busy, onClick: () => regenerate(index), "data-testid": "tech-ai-regenerate" }, "Перегенерировать") : null,
@@ -3565,6 +3666,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { fallbackMarkdown, markdownHtml, linkPanelTitles, sparkPoints, pickAnswerCharts, formatChartValue, summarizeSeries, findPanelElement, contextSummary, errorPresentation, presentationCss, loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
+__test: { chartsForContext, chartTime, fallbackMarkdown, markdownHtml, linkPanelTitles, sparkPoints, pickAnswerCharts, formatChartValue, summarizeSeries, findPanelElement, contextSummary, errorPresentation, presentationCss, loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
   };
 });

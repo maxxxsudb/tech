@@ -672,6 +672,161 @@ test("мини-графики: ряд прореживается без поте
   assert.equal(pickAnswerCharts(all, "Общий ответ без названий", [])[0].panelId, 3, "без упоминаний — самый заметный пик");
   assert.equal(formatChartValue(95.123, "percent"), "95.1%");
   assert.equal(formatChartValue(0.5, "percentunit"), "50%");
-  assert.equal(formatChartValue(2048, "bytes"), "2 KB");
+  assert.equal(formatChartValue(2048, "bytes"), "2 KiB");
   assert.equal(formatChartValue(15300), "15.3k");
+});
+
+test("мини-графики сохраняют края ряда при прореживании и не превышают лимит", () => {
+  const points = Array.from({ length: 500 }, (_, index) => [1700000000000 + index * 60000, index === 333 ? 999 : index % 7]);
+  const original = JSON.stringify(points);
+  for (const limit of [2, 3, 10, 11, 60]) {
+    const spark = t.sparkPoints(points, limit);
+    assert.ok(spark.length <= limit, `лимит ${limit}`);
+    assert.deepEqual(spark[0], points[0], `первая точка при лимите ${limit}`);
+    assert.deepEqual(spark.at(-1), points.at(-1), `последняя точка при лимите ${limit}`);
+    assert.ok(spark.every((point, index) => !index || point[0] > spark[index - 1][0]), "порядок времени");
+  }
+  assert.equal(JSON.stringify(points), original);
+  assert.deepEqual(t.sparkPoints([], 10), []);
+  assert.deepEqual(t.sparkPoints([[1000, 5]], 10), [[1000, 5]]);
+});
+
+test("мини-графики сохраняют null-разрывы до и после прореживания", () => {
+  const short = [[1000, 4], [2000, null], [3000, 6]];
+  assert.deepEqual(t.sparkPoints(short, 60), short);
+  const points = Array.from({ length: 150 }, (_, index) => [1700000000000 + index * 60000, index === 73 ? null : 4 + index % 5]);
+  for (const limit of [9, 60]) {
+    const spark = t.sparkPoints(points, limit);
+    const gap = spark.findIndex((point) => point[1] === null);
+    assert.ok(spark.length <= limit);
+    assert.ok(gap > 0 && gap < spark.length - 1, "разрыв остаётся между числовыми точками");
+    assert.equal(spark[gap][0], points[73][0]);
+    assert.deepEqual(spark[0], points[0]);
+    assert.deepEqual(spark.at(-1), points.at(-1));
+    assert.ok(spark.every((point) => point[1] === null || point[1] >= 4), "null не становится нулём");
+  }
+});
+
+test("мини-графики с частыми пропусками не соединяют разрывы при маленьком бюджете", () => {
+  const points = Array.from({ length: 121 }, (_, index) => [1700000000000 + index * 60000, index % 2 ? null : 10 + index]);
+  for (const limit of [3, 7, 11, 60]) {
+    const spark = t.sparkPoints(points, limit);
+    assert.ok(spark.length <= limit);
+    assert.deepEqual(spark[0], points[0]);
+    assert.deepEqual(spark.at(-1), points.at(-1));
+    for (let index = 1; index < spark.length; index += 1) {
+      const previous = spark[index - 1];
+      const current = spark[index];
+      if (previous[1] === null || current[1] === null) continue;
+      const between = points.filter((point) => point[0] > previous[0] && point[0] < current[0]);
+      assert.ok(between.every((point) => point[1] !== null), `линия не пересекает пропуск при лимите ${limit}`);
+    }
+  }
+});
+
+test("мини-графики включают только серии из ограниченной сводки и сохраняют временные края", () => {
+  const start = Date.parse("2026-10-05T10:00:00Z");
+  const charts = [];
+  const summary = t.summarizeQueryResult({ frames: [
+    rawSeries({ pod: "low" }, [1, 2, 3], start),
+    rawSeries({ pod: "peak" }, [10, null, 90], start),
+    rawSeries({ pod: "middle" }, [20, 40, 30], start),
+  ] }, { rows: 5, recent: 2, series: 1 }, charts);
+  assert.deepEqual(summary.series.map((series) => series.name), ["pod=peak"]);
+  assert.deepEqual(charts.map((series) => series.name), summary.series.map((series) => series.name));
+  assert.equal(charts[0].firstAt, start);
+  assert.equal(charts[0].lastAt, start + 120000);
+  assert.equal(typeof charts[0].firstAt, "number");
+  assert.equal(typeof charts[0].lastAt, "number");
+  assert.deepEqual(charts[0].points, [[start, 10], [start + 60000, null], [start + 120000, 90]]);
+  assert.equal(summary.series[0].nulls, 1);
+  assert.ok(!JSON.stringify(summary).includes('"points"'));
+});
+
+test("ограничение мини-графиков различает одноимённые серии и не удаляет предыдущие результаты", () => {
+  const previous = { name: "предыдущий запрос", points: [[1, 1], [2, 2]] };
+  const charts = [previous];
+  const summary = t.summarizeQueryResult({ frames: [rawSeries({}, [1, 6]), rawSeries({}, [20, 80])] }, { series: 1 }, charts);
+  assert.equal(summary.series.length, 1);
+  assert.equal(charts.length, 2);
+  assert.equal(charts[0], previous);
+  assert.equal(charts[1].name, summary.series[0].name);
+  assert.equal(charts[1].max, 80);
+  assert.equal(summary.series[0].max, 80);
+});
+
+test("период мини-графика включает null на краях, но статистика учитывает только числа", () => {
+  const start = Date.parse("2026-10-05T10:00:00Z");
+  const charts = [];
+  const values = [null, 10, null, 90, null];
+  const summary = t.summarizeQueryResult({ frames: [rawSeries({ pod: "api" }, values, start)] }, { series: 1, recent: 3 }, charts);
+  assert.equal(charts.length, 1);
+  assert.equal(charts[0].firstAt, start);
+  assert.equal(charts[0].lastAt, start + 240000);
+  assert.deepEqual(charts[0].points.map((point) => point[1]), values);
+  assert.equal(summary.series[0].first, 10);
+  assert.equal(summary.series[0].last, 90);
+  assert.equal(summary.series[0].avg, 50);
+  assert.equal(summary.series[0].nulls, 3);
+  assert.deepEqual(summary.series[0].recent.map((point) => point[1]), [10, 90]);
+});
+
+test("выбор мини-графиков не считает код и существующие Markdown-ссылки упоминанием панели", () => {
+  const charts = [
+    { panelId: 2, title: "HTTP 5xx", series: [{ max: 10, min: 0, avg: 9, points: [[1, 1], [2, 2]] }] },
+    { panelId: 3, title: "CPU", series: [{ max: 100, min: 0, avg: 5, points: [[1, 1], [2, 2]] }] },
+    { panelId: 4, title: "Память", series: [{ max: 10, min: 0, avg: 5, points: [[1, 1], [2, 2]] }] },
+  ];
+  for (const content of [
+    "`HTTP 5xx` — пример кода. Проверьте Память.",
+    "```text\nHTTP 5xx\nпанель 2\n```\n\nПроверьте Память.",
+    "[HTTP 5xx](https://example.com/guide) — внешний материал. Проверьте Память.",
+    "[панель 2](https://example.com/guide) — внешний материал. Проверьте Память.",
+  ]) {
+    assert.deepEqual(t.pickAnswerCharts(charts, content, [], 1).map((chart) => chart.panelId), [4], content);
+  }
+  assert.deepEqual(t.pickAnswerCharts(charts, "`HTTP 5xx`", [], 1).map((chart) => chart.panelId), [3], "без текстового упоминания выбирается реальный пик");
+});
+
+test("мини-графики соответствуют фактически переданным сериям после сжатия контекста", () => {
+  const low = { name: "CPU", unit: "percent", min: 1, max: 5, avg: 3, last: 2 };
+  const peak = { name: "CPU", unit: "percent", min: 10, max: 90, avg: 40, last: 20 };
+  const peakChart = Object.assign({ refId: "A", points: [[1000, 10], [2000, 90], [3000, 20]] }, peak);
+  const charts = [
+    { panelId: 1, title: "Нагрузка", series: [
+      Object.assign({ refId: "A", points: [[1000, 1], [2000, 5]] }, low),
+      peakChart,
+      Object.assign({}, peakChart, { refId: "B" }),
+      Object.assign({}, peakChart, { unit: "bytes" }),
+    ] },
+    { panelId: 2, title: "Не передавали", series: [peakChart] },
+  ];
+  const context = { panelData: [{ panelId: 1, results: [{ refId: "A", result: { series: [low, peak] } }] }] };
+  const original = JSON.stringify(charts);
+  const reduced = t.shrinkPanelData(context, { series: 1 });
+  assert.deepEqual(reduced.panelData[0].results[0].result.series, [peak]);
+  assert.deepEqual(t.chartsForContext(charts, JSON.stringify(reduced)), [{ panelId: 1, title: "Нагрузка", series: [peakChart] }]);
+  assert.equal(JSON.stringify(charts), original, "фильтрация не меняет снимок");
+});
+
+test("фильтр мини-графиков различает одинаковую статистику по времени пика с точностью модели до минуты", () => {
+  const summary = { name: "CPU", unit: "percent", min: 10, max: 90, avg: 40, last: 20, maxAt: "10-07 09:12" };
+  const matched = Object.assign({}, summary, { refId: "A", maxAt: Date.UTC(2026, 9, 7, 9, 12), points: [[1000, 10], [2000, 90]] });
+  const other = Object.assign({}, matched, { maxAt: Date.UTC(2026, 9, 7, 9, 20) });
+  const charts = [{ panelId: 1, title: "Нагрузка", series: [matched, other] }];
+  const contextJson = JSON.stringify({ panelData: [{ panelId: 1, results: [{ refId: "A", result: { series: [summary] } }] }] });
+  assert.deepEqual(t.chartsForContext(charts, contextJson), [{ panelId: 1, title: "Нагрузка", series: [matched] }]);
+  const sameMinute = Object.assign({}, matched, { maxAt: matched.maxAt + 49000 });
+  assert.equal(t.chartsForContext([{ panelId: 1, series: [sameMinute] }], contextJson)[0].series[0], sameMinute, "секунды не различимы в переданной модели сводке");
+});
+
+test("мини-графики скрыты, если из переданного контекста удалены результаты", () => {
+  const charts = [{ panelId: 1, title: "CPU", series: [{ refId: "A", name: "CPU", max: 90, points: [[1000, 10], [2000, 90]] }] }];
+  for (const context of [
+    { panels: [{ id: 1, title: "CPU" }], panelData: [{ panelId: 1, title: "CPU" }] },
+    { panelData: [{ panelId: 1, results: [{ refId: "A", result: { series: [] } }] }] },
+    { dashboardTitle: "Минимальный контекст" },
+  ]) {
+    assert.deepEqual(t.chartsForContext(charts, JSON.stringify(context)), []);
+  }
 });

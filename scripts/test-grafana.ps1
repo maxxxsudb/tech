@@ -1,7 +1,7 @@
 param(
     [string]$Container = 'tech-ai-grafana-test',
     [switch]$Prepare,
-    [string[]]$Cases = @('verify-080.js', 'verify-features.js', 'verify-panel-selection.js', 'verify-investigation-tools.js', 'verify-apply.js', 'verify-ux.js', 'verify-082.js', 'verify-083.js', 'verify-084.js')
+    [string[]]$Cases = @('verify-080.js', 'verify-features.js', 'verify-panel-selection.js', 'verify-investigation-tools.js', 'verify-apply.js', 'verify-ux.js', 'verify-082.js', 'verify-083.js', 'verify-084.js', 'verify-085.js')
 )
 $ErrorActionPreference = 'Stop'
 $projectPath = Split-Path $PSScriptRoot -Parent
