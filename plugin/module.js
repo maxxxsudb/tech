@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.8.5";
+  const PLUGIN_VERSION = "0.8.6";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -207,13 +207,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     "@media(max-width:480px) { .tech-ai-root .tech-ai-period-chip { display:none; } }",
     ".tech-ai-root .tech-ai-quiet:not(:disabled):hover { opacity:1; filter:none; border-color:transparent; background:rgba(128,128,128,.14); }",
     ".tech-ai-answer a.tech-ai-panel-link { text-decoration:none; border-bottom:1px dashed currentColor; cursor:pointer; } .tech-ai-answer a.tech-ai-panel-link::before { content:'▦ '; font-size:.85em; opacity:.8; }",
-    ".tech-ai-root .tech-ai-charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr)); gap:10px; margin-top:10px; } .tech-ai-root .tech-ai-charts-caption { margin-top:12px; font-size:12px; color:var(--tech-ai-muted); } .tech-ai-root .tech-ai-charts-caption summary { cursor:pointer; padding:4px 0; }",
+    ".tech-ai-root .tech-ai-charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr)); gap:10px; margin-top:10px; } .tech-ai-root .tech-ai-charts-caption { margin-top:12px; font-size:12px; } .tech-ai-root .tech-ai-charts-caption > summary,.tech-ai-root .tech-ai-charts-note { color:var(--text-secondary,#999); } .tech-ai-root .tech-ai-charts-caption summary { cursor:pointer; padding:4px 0; }",
     ".tech-ai-root .tech-ai-chart-card { min-width:0; padding:12px; border:1px solid rgba(128,128,128,.22); border-radius:8px; background:rgba(128,128,128,.04); }",
     ".tech-ai-root .tech-ai-chart-title:hover { color:var(--tech-ai-link); } .tech-ai-root .tech-ai-chart-title:focus-visible { outline:2px solid #5794f2; outline-offset:2px; }",
     ".tech-ai-root .tech-ai-chart-title { display:block; max-width:100%; padding:0; border:0; background:none; color:inherit; text-align:left; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }",
     ".tech-ai-root .tech-ai-chart-series { font-size:11px; opacity:.65; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".tech-ai-root .tech-ai-chart-card svg { margin:6px 0 4px; }",
-    ".tech-ai-root .tech-ai-chart-stats { display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; font-variant-numeric:tabular-nums; } .tech-ai-root .tech-ai-chart-peak { font-weight:600; } .tech-ai-root .tech-ai-chart-range { margin-top:8px; font-size:10px; color:var(--tech-ai-muted); overflow-wrap:anywhere; }",
+    ".tech-ai-root .tech-ai-chart-stats { display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; font-variant-numeric:tabular-nums; } .tech-ai-root .tech-ai-chart-peak { font-weight:600; } .tech-ai-root .tech-ai-chart-range { margin-top:8px; font-size:10px; color:var(--text-secondary,#999); overflow-wrap:anywhere; }",
     ".tech-ai-panel-highlight { outline:3px solid #5794f2 !important; outline-offset:2px; border-radius:4px; animation:tech-ai-panel-flash 2.4s ease-out; }",
     "@keyframes tech-ai-panel-flash { 0%,30% { box-shadow:0 0 0 8px rgba(87,148,242,.35); } 100% { box-shadow:0 0 0 0 rgba(87,148,242,0); } }",
   ].join("\n");
@@ -802,6 +802,21 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     return result;
   }
 
+  // Prometheus и Loki не передают единицу во frame: она задана в fieldConfig панели (defaults или override по имени/refId).
+  function panelUnit(panel, series) {
+    const config = (panel && panel.fieldConfig) || {};
+    let unit = config.defaults && config.defaults.unit;
+    (config.overrides || []).forEach((override) => {
+      const matcher = override && override.matcher || {};
+      const matches = (matcher.id === "byName" || matcher.id === "byDisplayName") ? matcher.options === series.name
+        : matcher.id === "byFrameRefID" ? matcher.options === series.refId : false;
+      if (!matches) return;
+      const property = (override.properties || []).find((item) => item && item.id === "unit" && item.value);
+      if (property) unit = property.value;
+    });
+    return unit || undefined;
+  }
+
   function summarizeSeries(field, schema, times, values, recent, charts) {
     const points = [];
     for (let index = 0; index < values.length; index += 1) {
@@ -1108,8 +1123,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             return { refId, result };
           }),
         };
-        // Ряды для мини-графиков идут отдельно от panelData и в модель не попадают.
-        if (series && series.length) options.charts.push({ panelId: panel.id, title: panel.title, type: panel.type, series: series.slice(0, 3) });
+        // Ряды для мини-графиков идут отдельно от panelData и в модель не попадают. Здесь сохраняются все ряды:
+        // какие из них показать, решается после сжатия контекста (chartsForContext + limitAnswerCharts).
+        if (series && series.length) options.charts.push({ panelId: panel.id, title: panel.title, type: panel.type, order: selected.indexOf(panel), series: series.map((chart) => Object.assign(chart, { displayUnit: chart.unit || panelUnit(panel, chart) })) });
         const skippedTargets = panelTargets(settings, panel).length - targets.length;
         if (skippedTargets > 0) item.note = `Выполнены первые ${targets.length} запросов панели, ещё ${skippedTargets} пропущено лимитом`;
         return item;
@@ -1628,6 +1644,15 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     return variables;
   }
 
+  // Часовой пояс дашборда для подписей мини-графиков. В Grafana 10–11.2 он не попадает в URL,
+  // поэтому берётся из JSON дашборда; в контекст модели не добавляется.
+  const dashboardTimezones = new Map();
+
+  function userTimezone() {
+    const user = grafanaRuntime.config.bootData && grafanaRuntime.config.bootData.user;
+    return (user && user.timezone) || "browser";
+  }
+
   async function loadContext(extensionContext) {
     const params = new URLSearchParams(location.search);
     const uid = dashboardUid();
@@ -1645,6 +1670,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const dashboard = response && response.dashboard;
     if (!dashboard) return context;
     context.dashboardTitle = dashboard.title;
+    if (dashboard.timezone) dashboardTimezones.set(uid, dashboard.timezone);
     context.dashboardSource = "Сохранённая версия дашборда; несохранённые правки не видны";
     context.tags = dashboard.tags;
     if (!context.timeRange.from && dashboard.time) context.timeRange.from = dashboard.time.from;
@@ -2070,6 +2096,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     return (charts || []).map((chart) => Object.assign({}, chart, { series: (chart.series || []).filter((series) => sent.get(Number(chart.panelId))?.has(signature(series.refId, series))) })).filter((chart) => chart.series.length);
   }
 
+  // В каждой панели — до трёх переданных модели рядов с наибольшим максимумом (так же, как сжатие «серии до N»).
+  function limitAnswerCharts(charts) {
+    return (charts || []).map((chart) => Object.assign({}, chart, {
+      series: (chart.series || []).slice().sort((a, b) => (Number(b.max) || 0) - (Number(a.max) || 0)).slice(0, 3),
+    })).filter((chart) => chart.series.length);
+  }
+
   // Какие мини-графики показать: панели, названные в ответе (в порядке упоминания), иначе панели с самым заметным пиком.
   function pickAnswerCharts(charts, content, panels, limit) {
     limit = limit || 4;
@@ -2123,6 +2156,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const chart = props.chart;
     const [selected, setSelected] = React.useState(0);
     const series = chart.series[Math.min(selected, chart.series.length - 1)];
+    const unit = series.displayUnit || series.unit;
     const times = (series.points || []).map((point) => Number(point[0])).filter(Number.isFinite);
     const from = series.firstAt ?? (times.length ? Math.min.apply(null, times) : undefined);
     const to = series.lastAt ?? (times.length ? Math.max.apply(null, times) : undefined);
@@ -2139,23 +2173,33 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       ) : h("div", { className: "tech-ai-chart-series", style: { marginTop: 4 } }, series.name || "Ряд"),
       h(Sparkline, { points: series.points }),
       h("div", { className: "tech-ai-chart-stats" },
-        h("span", { className: "tech-ai-chart-peak" }, `макс ${formatChartValue(series.max, series.unit)} в ${chartTime(series.maxAt, timezone, to - from > 36 * 3600e3)}`),
-        h("span", null, `мин ${formatChartValue(series.min, series.unit)}`),
-        h("span", null, `последнее ${formatChartValue(series.last, series.unit)}`)
+        h("span", { className: "tech-ai-chart-peak" }, `макс ${formatChartValue(series.max, unit)} в ${chartTime(series.maxAt, timezone, to - from > 36 * 3600e3)}`),
+        h("span", null, `мин ${formatChartValue(series.min, unit)}`),
+        h("span", null, `последнее ${formatChartValue(series.last, unit)}`)
       ),
       h("div", { className: "tech-ai-chart-range", "data-testid": "tech-ai-chart-range" }, `Данные: ${chartTime(from, timezone, true)} — ${chartTime(to, timezone, true)} · ${zoneLabel}${(series.points || []).some((point) => point[1] === null) ? " · есть пропуски" : ""}`)
     );
   }
 
   function AnswerCharts(props) {
+    const [open, setOpen] = React.useState(false);
     const panels = availablePanels(props.context);
     const picked = pickAnswerCharts(props.charts, props.content, panels);
     if (!picked.length) return null;
-    return h("details", { className: "tech-ai-charts-caption", "data-testid": "tech-ai-answer-charts" },
-      h("summary", { title: "Показаны упомянутые в ответе панели (до четырёх); если упоминаний нет — до трёх панелей по изменчивости ряда. Это не ограничивает переданный контекст." }, `Данные к ответу · ${picked.length}${props.charts.length > picked.length ? ` из ${props.charts.length}` : ""}`),
-      h("div", { style: { fontSize: 11, marginTop: 8 } }, `${props.verified ? "Сводки этих рядов переданы модели." : "Старый снимок: состав переданных модели рядов не подтверждён."} Графики построены локально по исходным данным datasource, без преобразований панели.`),
-      h("div", { className: "tech-ai-charts" }, picked.map((chart) => h(AnswerChartCard, { key: chart.panelId, chart, timezone: props.timezone })))
+    const total = Math.max(Number(props.total) || 0, props.charts.length);
+    // Карточки монтируются только в раскрытом блоке: свёрнутые блоки старых ответов не перерисовываются на каждый ввод.
+    return h("details", { className: "tech-ai-charts-caption", "data-testid": "tech-ai-answer-charts", onToggle: (event) => setOpen(event.currentTarget.open) },
+      h("summary", { title: "Показаны упомянутые в ответе панели (до четырёх); если упоминаний нет — до трёх панелей по изменчивости ряда. Это не ограничивает переданный контекст." }, `Данные к ответу · ${picked.length}${total > picked.length ? ` из ${total}` : ""}`),
+      open ? h("div", { className: "tech-ai-charts-note", style: { fontSize: 11, marginTop: 8 } }, `${props.verified ? "Сводки этих рядов переданы модели." : "Старый снимок: состав переданных модели рядов не подтверждён."} Графики построены локально по исходным данным datasource, без преобразований панели.`) : null,
+      open ? h("div", { className: "tech-ai-charts" }, picked.map((chart) => h(AnswerChartCard, { key: chart.panelId, chart, timezone: props.timezone }))) : null
     );
+  }
+
+  // React.memo: свёрнутые блоки истории не пересчитываются на каждое нажатие клавиши в поле ввода.
+  let memoAnswerCharts;
+  function answerChartsComponent() {
+    if (!memoAnswerCharts) memoAnswerCharts = typeof React.memo === "function" ? React.memo(AnswerCharts) : AnswerCharts;
+    return memoAnswerCharts;
   }
 
   function MessageContent(props) {
@@ -2240,9 +2284,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   }
 
   function saveHistory(key, history) {
+    const items = history.slice(-HISTORY_LIMIT);
     try {
-      sessionStorage.setItem(key, JSON.stringify(history.slice(-HISTORY_LIMIT)));
-    } catch (_) {}
+      sessionStorage.setItem(key, JSON.stringify(items));
+    } catch (_) {
+      // Переполнение sessionStorage: сохраняем текст диалога без мини-графиков, чтобы история не терялась.
+      try { sessionStorage.setItem(key, JSON.stringify(items.map((item) => item.charts ? Object.assign({}, item, { charts: undefined, chartsTotal: undefined }) : item))); } catch (__) {}
+    }
   }
 
   // Выбор панелей хранится рядом с историей диалога: Grafana пересоздаёт drawer при переходах,
@@ -2692,7 +2740,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           const charts = [];
           const panelData = await collect(range, 0);
           if (!isCurrent()) return;
-          snapshot = { key, dataPlan, panelData, at: Date.now(), range, charts: charts.slice(0, 12) };
+          snapshot = { key, dataPlan, panelData, at: Date.now(), range, charts: charts.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0)) };
           if (dataPlan.comparePeriods) {
             const priorRange = { from: range.from - (range.to - range.from), to: range.from };
             snapshot.comparisonPanelData = Date.now() - dataStarted < dataPlan.totalTimeoutSeconds * 1000
@@ -2748,9 +2796,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         if (!isCurrent()) return;
         const calibrated = recordCalibration(settings, result.calibration);
         setLastRequest(Object.assign({}, request, { usage: sumUsage(transcriptionUsage, result.usage), charsPerToken: result.calibration ? calibrated : undefined, totalMs: Date.now() - started, firstTokenMs: settings.streaming !== false ? firstTokenMs : undefined }));
-        const answerCharts = settings.answerCharts !== false && snapshot ? chartsForContext(snapshot.charts, plan.contextJson) : [];
-        const chartTimezone = selectedContext.timeRange && selectedContext.timeRange.timezone;
-        setHistory((current) => current.concat([{ role: "assistant", content: result.content, reasoning: result.reasoning, steps: result.steps, charts: answerCharts.length ? answerCharts : undefined, chartTimezone, chartsVerified: true }]));
+        const sentCharts = settings.answerCharts !== false && snapshot ? limitAnswerCharts(chartsForContext(snapshot.charts, plan.contextJson)) : [];
+        // В истории хранятся только карточки, которые будут показаны: иначе каждый ответ копирует ряды всех панелей.
+        const answerCharts = pickAnswerCharts(sentCharts, result.content, availablePanels(selectedContext));
+        const chartTimezone = (selectedContext.timeRange && selectedContext.timeRange.timezone) || dashboardTimezones.get(selectedContext.dashboardUid) || userTimezone();
+        setHistory((current) => current.concat([{ role: "assistant", content: result.content, reasoning: result.reasoning, steps: result.steps, charts: answerCharts.length ? answerCharts : undefined, chartsTotal: answerCharts.length ? sentCharts.length : undefined, chartTimezone, chartsVerified: true }]));
         setAttachments([]);
       } catch (reason) {
         if (!isCurrent()) return;
@@ -2856,7 +2906,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           message.reasoning ? h("details", { style: styles.context }, h("summary", { style: { cursor: "pointer" } }, isPending && !message.content ? "Размышляет…" : "Размышления модели"), h("div", { style: { whiteSpace: "pre-wrap" } }, message.reasoning)) : null,
           (message.steps || []).map((step, stepIndex) => h(StepView, { key: `step-${stepIndex}`, step, context })),
           h(MessageContent, { content: isPending ? stripPendingQueries(content) : content, context }),
-          !isPending && content && (message.charts || []).length && settings && settings.answerCharts !== false ? h(AnswerCharts, { charts: message.charts, content, context, timezone: message.chartTimezone, verified: message.chartsVerified === true }) : null,
+          !isPending && content && (message.charts || []).length && settings && settings.answerCharts !== false ? h(answerChartsComponent(), { charts: message.charts, total: message.chartsTotal, content, context, timezone: message.chartTimezone, verified: message.chartsVerified === true }) : null,
           !isPending && content ? h("div", { style: Object.assign({}, styles.quickActions, { marginTop: 6, marginBottom: -4, marginLeft: -6, gap: 2 }), "data-testid": "tech-ai-answer-actions" },
             h("button", { type: "button", className: "tech-ai-quiet", style: styles.quietButton, onClick: () => copyText(content) }, "Копировать"),
             !message.local ? h("button", { type: "button", className: "tech-ai-quiet", style: styles.quietButton, disabled: busy, onClick: () => regenerate(index), "data-testid": "tech-ai-regenerate" }, "Перегенерировать") : null,
@@ -3666,6 +3716,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-__test: { chartsForContext, chartTime, fallbackMarkdown, markdownHtml, linkPanelTitles, sparkPoints, pickAnswerCharts, formatChartValue, summarizeSeries, findPanelElement, contextSummary, errorPresentation, presentationCss, loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
+__test: { limitAnswerCharts, panelUnit, saveHistory, chartsForContext, chartTime, fallbackMarkdown, markdownHtml, linkPanelTitles, sparkPoints, pickAnswerCharts, formatChartValue, summarizeSeries, findPanelElement, contextSummary, errorPresentation, presentationCss, loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
   };
 });
