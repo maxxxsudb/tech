@@ -641,3 +641,10 @@ test("названия панелей в ответе становятся сс�
   assert.ok(html.includes("Дубль, панель 77."), "неоднозначное название и неизвестный номер не связываются");
   assert.equal(linkPanelTitles("<p>текст</p>", []), "<p>текст</p>");
 });
+
+test("ссылки на панели поддерживают кавычки в обоих Markdown renderer", () => {
+  const panels = [{ id: 0, title: `Worker's "errors" & latency`, type: "stat" }];
+  for (const html of [t.fallbackMarkdown(panels[0].title), `<p>Worker's "errors" &amp; latency</p>`]) {
+    assert.match(t.linkPanelTitles(html, panels), /data-panel-id="0"/);
+  }
+});

@@ -73,6 +73,7 @@ const puppeteer = require('puppeteer');
   });
   if (!scrolling.canScroll || !scrolling.moved || scrolling.overflowY !== 'auto') throw new Error(`Answer history is not scrollable: ${JSON.stringify(scrolling)}`);
   await page.screenshot({ path: '/test/features-success.png', fullPage: false });
+  await page.$$eval('[data-testid="tech-ai-user-turn"] details', nodes => nodes.forEach(node => { node.open = true; }));
   const chatText = await page.$eval('#tech-ai-assistant-drawer', (node) => node.innerText);
   await page.click('[data-testid="tech-ai-tab-diag"]');
   await page.waitForSelector('[data-testid="tech-ai-diagnostics-tab"]', { visible: true, timeout: 10000 });

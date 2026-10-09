@@ -1872,8 +1872,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       const title = String(panel && panel.title || "").trim();
       const id = Number(panel && panel.id);
       if (!panel || panel.type === "row" || !Number.isFinite(id) || title.length < 3) return;
-      const key = escapeHtmlText(title);
-      seen.set(key, seen.has(key) && seen.get(key) !== id ? null : id);
+      const escaped = escapeHtmlText(title);
+      const keys = new Set([escaped, escaped.replace(/&quot;/g, '"'), escaped.replace(/'/g, "&#39;"), escaped.replace(/&quot;/g, '"').replace(/'/g, "&#39;")]);
+      keys.forEach((key) => seen.set(key, seen.has(key) && seen.get(key) !== id ? null : id));
     });
     const ids = new Set((panels || []).filter((panel) => panel && panel.type !== "row").map((panel) => Number(panel.id)).filter(Number.isFinite));
     const titles = Array.from(seen.keys()).filter((key) => seen.get(key) !== null).sort((a, b) => b.length - a.length);
@@ -1892,7 +1893,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       if (skip || !part) return part;
       return part.replace(pattern, (match) => {
         const byTitle = seen.get(match);
-        if (byTitle) return link(byTitle, match);
+        if (byTitle !== undefined && byTitle !== null) return link(byTitle, match);
         const number = /(\d+)$/.exec(match);
         return number && /^[Пп]анел/.test(match) && ids.has(Number(number[1])) ? link(Number(number[1]), match) : match;
       });
