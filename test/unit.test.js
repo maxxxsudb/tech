@@ -648,3 +648,30 @@ test("ссылки на панели поддерживают кавычки в 
     assert.match(t.linkPanelTitles(html, panels), /data-panel-id="0"/);
   }
 });
+
+test("мини-графики: ряд прореживается без потери пика и не попадает в сводку для модели", () => {
+  const { sparkPoints, summarizeQueryResult, pickAnswerCharts, formatChartValue } = loadModule();
+  const points = Array.from({ length: 500 }, (_, i) => [1700000000000 + i * 60000, i === 333 ? 999 : i % 7]);
+  const spark = sparkPoints(points, 60);
+  assert.ok(spark.length <= 60);
+  assert.ok(spark.some((point) => point[1] === 999), "пик сохранён");
+  assert.ok(spark.every((point, i) => !i || point[0] > spark[i - 1][0]), "точки по времени");
+  const frame = { schema: { fields: [{ name: "time", type: "time" }, { name: "cpu", type: "number", config: { unit: "percent" } }] }, data: { values: [points.map((p) => p[0]), points.map((p) => p[1])] } };
+  const charts = [];
+  const summary = summarizeQueryResult({ frames: [frame] }, undefined, charts);
+  assert.equal(charts.length, 1);
+  assert.equal(charts[0].max, 999);
+  assert.equal(charts[0].maxAt, points[333][0]);
+  assert.ok(!JSON.stringify(summary).includes('"points"'), "точки графика не идут в модель");
+  const all = [
+    { panelId: 2, title: "HTTP 5xx", series: [{ max: 10, min: 0, avg: 9, points: [[1, 1], [2, 2]] }] },
+    { panelId: 3, title: "CPU", series: [{ max: 100, min: 0, avg: 5, points: [[1, 1], [2, 2]] }] },
+    { panelId: 4, title: "Память", series: [{ max: 10, min: 0, avg: 5, points: [[1, 1], [2, 2]] }] },
+  ];
+  assert.deepEqual(pickAnswerCharts(all, "Смотрите панель 4 и HTTP 5xx", []).map((c) => c.panelId), [4, 2]);
+  assert.equal(pickAnswerCharts(all, "Общий ответ без названий", [])[0].panelId, 3, "без упоминаний — самый заметный пик");
+  assert.equal(formatChartValue(95.123, "percent"), "95.1%");
+  assert.equal(formatChartValue(0.5, "percentunit"), "50%");
+  assert.equal(formatChartValue(2048, "bytes"), "2 KB");
+  assert.equal(formatChartValue(15300), "15.3k");
+});
