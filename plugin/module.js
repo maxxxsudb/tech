@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.8.1";
+  const PLUGIN_VERSION = "0.8.2";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -45,6 +45,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     explainSampleRangeHours: 1,
     screenshotEnabled: true,
     fileUploadsEnabled: true,
+    imageToTextEnabled: false,
     previewBeforeSend: "always",
     allowedDatasourceUids: "",
     minimumRole: "Viewer",
@@ -71,6 +72,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       explainSampleRows: 0,
       screenshotEnabled: false,
       fileUploadsEnabled: false,
+      imageToTextEnabled: false,
       toolsMode: "text",
     },
     normal: {
@@ -485,6 +487,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     if (usage && typeof usage === "object" && (usage.prompt_tokens || usage.completion_tokens)) {
       acc.usage = { prompt: Number(usage.prompt_tokens) || 0, completion: Number(usage.completion_tokens) || 0 };
     }
+  }
+
+  function sumUsage(first, second) {
+    if (!first && !second) return undefined;
+    return { prompt: ((first && first.prompt) || 0) + ((second && second.prompt) || 0), completion: ((first && first.completion) || 0) + ((second && second.completion) || 0) };
   }
 
   async function readEventStream(response, onDelta) {
@@ -1929,6 +1936,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const readingRef = React.useRef(false);
     const followRef = React.useRef(true);
     const composerRef = React.useRef(null);
+    const requestGeneration = React.useRef(0);
 
     React.useEffect(() => {
       let cancelled = false;
@@ -1947,6 +1955,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         .catch((reason) => setError(`Не удалось загрузить настройки или контекст: ${formatError(reason)}`));
       return () => {
         cancelled = true;
+        requestGeneration.current++;
         if (abortRef.current) abortRef.current.abort();
       };
     }, [props.initialContext]);
@@ -1963,7 +1972,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
 
     // Вложения выключены администратором: уже добавленные файлы не уходят в модель.
     React.useEffect(() => {
-      if (settings && settings.fileUploadsEnabled === false) setAttachments([]);
+      if (settings) setAttachments((current) => attachmentTools.applyImageToTextPolicy(current, settings));
     }, [settings]);
 
     React.useEffect(() => {
@@ -2054,14 +2063,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         dataEstimate: fetchesData ? investigationEstimate(settings, selectedContext, dataPlan) : undefined,
         snapshotAt: reusesSnapshot ? previous.at : undefined,
         screenshot: screenshotOn,
-        attachments: (action.attachmentSummaries || []).concat(attachmentTools.summaries(attachments)),
+        attachments: (action.attachmentSummaries || []).concat(attachmentTools.summaries(attachmentTools.applyImageToTextPolicy(attachments, settings))),
         dataMode: action.dataMode || (dataPlan ? dataPlan.sampleRows ? "sample" : "investigation" : "structure"),
         model: modelName(settings),
       });
     }
 
     function requestPrompt(prompt, action, files) {
-      const text = attachmentTools.composeText(files);
+      const text = attachmentTools.composeText(attachmentTools.applyImageToTextPolicy(files, settings));
       const base = action && action.modelContent || prompt;
       return redactString(base + (action && action.attachmentText ? `\n\n${action.attachmentText}` : "") + (text ? `\n\n${text}` : ""));
     }
@@ -2175,7 +2184,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       const prompt = String(promptOverride || input).trim();
       if (!prompt || busy || readingFiles || !settings || !context) return;
       action = Object.assign({}, action);
-      let requestFiles = settings.fileUploadsEnabled === false ? [] : (action.requestFiles || attachments);
+      let requestFiles = attachmentTools.applyImageToTextPolicy(action.requestFiles || attachments, settings);
       const baseHistory = action.baseHistory || (editTurn ? editTurn.history : history);
       let modelPrompt = requestPrompt(prompt, action, requestFiles);
       if (action && action.needsPanel && !context.panel && selectedPanelIds.length !== 1) {
@@ -2184,6 +2193,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         return;
       }
       const controller = new AbortController();
+      const generation = ++requestGeneration.current;
+      const isCurrent = () => generation === requestGeneration.current;
       abortRef.current = controller;
       setBusy(true);
       jumpToLatest();
@@ -2196,9 +2207,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       let partial = { content: "", reasoning: "", steps: [] };
       let userMessage;
       let screenshot;
+      let transcriptionUsage;
+      let request = { totalTokens: 0, reductions: [], panels: [], windowTokens: Number(settings.contextTokens) || 0, delivery: resolveContextDelivery(settings), model: modelName(settings), transcriptionRequests: 0 };
+      setLastRequest(request);
       try {
         assertAllowedRole(settings);
         screenshot = includeScreenshot && settings.screenshotEnabled !== false ? await captureDashboardScreenshot(rootRef.current) : undefined;
+        if (!isCurrent()) return;
         // Изображения с галкой «в текст» сначала распознаются отдельным коротким запросом,
         // а в основной вопрос уходит только полученный текст.
         if (requestFiles.some((item) => item.kind === "image" && item.asText && !item.transcript)) {
@@ -2207,7 +2222,15 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             if (item.kind !== "image" || !item.asText || item.transcript) { transcribed.push(item); continue; }
             setPending({ content: `Распознаём «${item.name}» в текст…`, reasoning: "", steps: [] });
             try {
-              const result = await postChat(settings, { model: modelName(settings), stream: false, max_tokens: 1024, messages: [imageUserMessage(attachmentTools.transcribePrompt, item, settings.imageTransport)] }, { signal: controller.signal });
+              const body = { model: modelName(settings), stream: false, messages: [imageUserMessage(attachmentTools.transcribePrompt, item, settings.imageTransport)] };
+              const maxTokens = Number(settings.maxTokens);
+              if (Number.isFinite(maxTokens) && maxTokens > 0) body.max_tokens = maxTokens;
+              const result = await postChat(settings, body, { signal: controller.signal });
+              if (!isCurrent()) return;
+              transcriptionUsage = sumUsage(transcriptionUsage, result.usage);
+              request = Object.assign({}, request, { transcriptionRequests: request.transcriptionRequests + 1, transcriptionUsage, usage: transcriptionUsage, totalMs: Date.now() - started });
+              setLastRequest(request);
+              if (result.finishReason === "length" || result.finishReason === "max_tokens") throw new Error("ответ обрезан лимитом токенов. Увеличьте Max output tokens в Configuration или задайте 0, чтобы использовать лимит провайдера");
               const text = splitThink(result.content).content.trim();
               if (!text) throw new Error("модель вернула пустой ответ");
               transcribed.push(Object.assign({}, item, { transcript: text }));
@@ -2238,9 +2261,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             maxTargets: dataPlan.maxTargets,
             sampleRows: dataPlan.sampleRows,
             totalTimeoutSeconds: Math.max(1, dataPlan.totalTimeoutSeconds - (Date.now() - dataStarted) / 1000),
-            onProgress: (progress) => setDataProgress({ completed: offset + progress.completed, total: count * (dataPlan.comparePeriods ? 2 : 1) }),
+            onProgress: (progress) => { if (isCurrent()) setDataProgress({ completed: offset + progress.completed, total: count * (dataPlan.comparePeriods ? 2 : 1) }); },
           });
           const panelData = await collect(range, 0);
+          if (!isCurrent()) return;
           snapshot = { key, dataPlan, panelData, at: Date.now(), range };
           if (dataPlan.comparePeriods) {
             const priorRange = { from: range.from - (range.to - range.from), to: range.from };
@@ -2249,6 +2273,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
               : panelData.map((item) => ({ panelId: item.panelId, title: item.title, error: "Общий таймаут: предыдущий период не запрашивался" }));
             snapshot.comparisonRange = { from: new Date(priorRange.from).toISOString(), to: new Date(priorRange.to).toISOString() };
           }
+          if (!isCurrent()) return;
           snapshotRef.current = snapshot;
           setSnapshotInfo({ at: snapshot.at, stats: panelDataStats(panelData), range });
         }
@@ -2263,7 +2288,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         setHistory(baseHistory.concat([userMessage]));
         setEditTurn(undefined);
         setPending(partial);
-        const request = {
+        request = Object.assign({}, request, {
           contextJson: plan.contextJson,
           reductions: plan.reductions,
           totalTokens: plan.totalTokens,
@@ -2277,23 +2302,26 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           attachments: userMessage.attachments,
           comparisonRange: snapshot && snapshot.comparisonRange,
           model: modelName(settings),
-        };
+        });
         setLastRequest(request);
         const messages = plan.messages.concat([attachmentTools.buildUserMessage(modelPrompt, imageFiles, settings.imageTransport, imageUserMessage)]);
         const result = await runAssistant(settings, requestContext, plan.contextJson, messages, {
           queries: Boolean(action && action.queries && action.dataMode !== "structure"),
           signal: controller.signal,
           onUpdate: (update) => {
+            if (!isCurrent()) return;
             if (firstTokenMs === undefined && (update.content || update.reasoning)) firstTokenMs = Date.now() - started;
             partial = update;
             setPending(Object.assign({}, update));
           },
         });
+        if (!isCurrent()) return;
         const calibrated = recordCalibration(settings, result.calibration);
-        setLastRequest(Object.assign({}, request, { usage: result.usage, charsPerToken: result.calibration ? calibrated : undefined, totalMs: Date.now() - started, firstTokenMs: settings.streaming !== false ? firstTokenMs : undefined }));
+        setLastRequest(Object.assign({}, request, { usage: sumUsage(transcriptionUsage, result.usage), charsPerToken: result.calibration ? calibrated : undefined, totalMs: Date.now() - started, firstTokenMs: settings.streaming !== false ? firstTokenMs : undefined }));
         setHistory((current) => current.concat([{ role: "assistant", content: result.content, reasoning: result.reasoning, steps: result.steps }]));
         setAttachments([]);
       } catch (reason) {
+        if (!isCurrent()) return;
         if (reason && reason.name === "AbortError" && userMessage) {
           setHistory((current) => current.concat([{ role: "assistant", content: `${partial.content || ""}\n\n_(ответ остановлен)_`.trim(), reasoning: partial.reasoning, steps: partial.steps }]));
         } else {
@@ -2315,10 +2343,12 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           setError(message);
         }
       } finally {
-        abortRef.current = null;
-        setDataProgress(undefined);
-        setPending(undefined);
-        setBusy(false);
+        if (isCurrent()) {
+          abortRef.current = null;
+          setDataProgress(undefined);
+          setPending(undefined);
+          setBusy(false);
+        }
       }
     }
 
@@ -2338,7 +2368,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     }
 
     function newDialog() {
+      requestGeneration.current++;
       if (busy) stop();
+      abortRef.current = null;
+      setBusy(false);
+      setPending(undefined);
+      setDataProgress(undefined);
+      setInvestigationSetup(undefined);
       setHistory([]);
       setError("");
       setRetry(undefined);
@@ -2400,6 +2436,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const investigationContext = settings && context ? selectContextPanels(withPageState(context), selectedPanelIds) : context;
     const investigationStats = investigationSetup && settings ? investigationEstimate(settings, investigationContext, investigationSetup) : undefined;
     const filesOn = Boolean(settings && settings.fileUploadsEnabled !== false);
+    const imageToTextOn = attachmentTools.imageToTextAllowed(settings);
     const setupOpen = Boolean(investigationSetup && investigationStats);
     const statsLine = lastRequest
       ? `Последний запрос ≈${(lastRequest.totalTokens / 1000).toFixed(1)}k ток.${lastRequest.windowTokens ? ` из ${(lastRequest.windowTokens / 1000).toFixed(1)}k` : ""}` +
@@ -2410,6 +2447,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         (lastRequest.data && lastRequest.data.total ? ` · данные: ${lastRequest.data.loaded} из ${lastRequest.data.total}` : "") +
         (lastRequest.dataRange ? ` · диапазон данных: ${new Date(lastRequest.dataRange.from).toLocaleString()} — ${new Date(lastRequest.dataRange.to).toLocaleString()}` : "") +
         (lastRequest.usage ? ` · usage всех раундов: ${lastRequest.usage.prompt} ток. промпта, ${lastRequest.usage.completion} ответа` : "") +
+        (lastRequest.transcriptionRequests ? ` · распознавание: ${lastRequest.transcriptionRequests} запросов${lastRequest.transcriptionUsage ? ` (${lastRequest.transcriptionUsage.prompt} ток. промпта, ${lastRequest.transcriptionUsage.completion} ответа, включены в usage)` : " (API не вернул usage)"}` : "") +
         (lastRequest.charsPerToken ? ` · оценка токенов откалибрована: ${lastRequest.charsPerToken} симв./ток.` : "") +
         (lastRequest.totalMs ? ` · время ${(lastRequest.totalMs / 1000).toFixed(1)} с${lastRequest.firstTokenMs !== undefined ? `, первое слово ${(lastRequest.firstTokenMs / 1000).toFixed(1)} с` : ""}` : "") +
         (lastRequest.screenshot ? ` · снимок: ${lastRequest.screenshot.format} ${lastRequest.screenshot.width}×${lastRequest.screenshot.height}, ${Math.ceil(lastRequest.screenshot.bytes / 1024)} КБ` : "")
@@ -2595,11 +2633,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         filesOn && attachments.length ? h("div", { style: { display: "flex", gap: 6, maxHeight: 70, overflowY: "auto", flexWrap: "wrap" }, "data-testid": "tech-ai-attachments" }, attachments.map((item) => h("div", { key: item.id, style: { display: "flex", gap: 6, alignItems: "center", padding: 4, border: "1px solid rgba(128,128,128,.3)", borderRadius: 6, minWidth: 0, fontSize: 12 } },
           item.kind === "image" ? h("img", { src: item.dataUrl, alt: item.name, style: { width: 40, height: 32, objectFit: "contain" } }) : null,
           h("span", { style: { overflowWrap: "anywhere" } }, `${item.name} · ${Math.ceil(item.bytes / 1024)} КБ`),
-          item.kind === "image"
-            ? h("label", { style: { display: "flex", gap: 3, alignItems: "center", whiteSpace: "nowrap" }, title: "Перед отправкой модель перепишет текст и содержимое изображения, и в вопрос уйдёт только этот текст. Подходит, если основной запрос с картинкой не проходит." },
+          item.kind === "image" && imageToTextOn
+            ? h("label", { style: { display: "flex", gap: 3, alignItems: "center", whiteSpace: "nowrap" }, title: "Дополнительный запрос к той же модели для извлечения текста и описания. В основной вопрос уйдёт текст вместо картинки; визуальные детали могут потеряться. Не обходит запрет API на base64." },
               h("input", { type: "checkbox", checked: Boolean(item.asText), disabled: busy, "data-testid": "tech-ai-attachment-as-text", onChange: (event) => { const checked = event.target.checked; setAttachments((current) => current.map((file) => file.id === item.id ? Object.assign({}, file, { asText: checked, transcript: checked ? file.transcript : undefined }) : file)); setSendPreview(undefined); } }),
               "в текст")
-            : h("span", { style: styles.context, title: "Содержимое файла вставляется в сообщение текстом" }, "текстом"),
+            : item.kind === "text" ? h("span", { style: styles.context, title: "Содержимое файла вставляется в сообщение текстом" }, "текстом") : null,
           h("button", { type: "button", style: styles.linkButton, disabled: busy, "aria-label": `Удалить ${item.name}`, onClick: () => { setAttachments((current) => current.filter((file) => file.id !== item.id)); setSendPreview(undefined); } }, "×")
         ))) : null
         ),
@@ -2864,6 +2902,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       ),
       checkbox("Разрешить снимок дашборда (если выключено, галка в чате скрыта и захват экрана не запускается)", "screenshotEnabled", true),
       checkbox("Разрешить вложения файлов (если выключено, в чате нет кнопки «Файл», вставка и перетаскивание файлов не работают)", "fileUploadsEnabled", true),
+      checkbox("Разрешить преобразование изображений в текст для всех пользователей (дополнительный запрос к той же модели)", "imageToTextEnabled", false),
+      h("div", { style: styles.context }, "По умолчанию выключено: галка «в текст» скрыта, картинки отправляются изображениями. Распознавание теряет визуальные детали и не обходит ограничения API на base64. После изменения сохраните настройки и заново откройте чат."),
       state.screenshotEnabled === false ? null : h("div", { style: Object.assign({}, styles.field, { padding: 10, border: "1px solid rgba(128,128,128,.35)", borderRadius: 4 }) },
         h("strong", null, "Передача снимков"),
         h("label", { style: styles.field },

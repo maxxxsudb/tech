@@ -1,7 +1,7 @@
 param(
     [string]$Container = 'tech-ai-grafana-test',
     [switch]$Prepare,
-    [string[]]$Cases = @('verify-080.js', 'verify-features.js', 'verify-panel-selection.js', 'verify-investigation-tools.js', 'verify-apply.js', 'verify-ux.js')
+    [string[]]$Cases = @('verify-080.js', 'verify-features.js', 'verify-panel-selection.js', 'verify-investigation-tools.js', 'verify-apply.js', 'verify-ux.js', 'verify-082.js')
 )
 $ErrorActionPreference = 'Stop'
 $projectPath = Split-Path $PSScriptRoot -Parent
@@ -20,6 +20,7 @@ if ($Prepare) {
     Invoke-Docker -Arguments @('exec', '-u', '0', '-e', 'npm_config_cache=/tmp/tech-npm-cache', $Container, 'npm', 'cache', 'clean', '--force')
 }
 Invoke-Docker -Arguments @('exec', '-e', 'NODE_PATH=/opt/tech-browser/node_modules', $Container, 'node', '-e', "require('puppeteer'); console.log('Puppeteer ready')")
+Invoke-Docker -Arguments @('exec', $Container, 'node', '-e', "(async()=>{for(let attempt=0;attempt<30;attempt++){try{const response=await fetch('http://127.0.0.1:3000/crf/dashboard/api/health',{signal:AbortSignal.timeout(2000)});if(response.ok){console.log('Grafana ready');return}}catch(_){}await new Promise(resolve=>setTimeout(resolve,2000))}throw new Error('Grafana startup timeout')})().catch(error=>{console.error(error.message);process.exit(1)})")
 Invoke-Docker -Arguments @('cp', (Join-Path $projectPath 'test/.'), ($Container + ':/test'))
 Invoke-Docker -Arguments @('exec', '-u', '0', $Container, 'mkdir', '-p', '/test-results')
 Invoke-Docker -Arguments @('exec', '-u', '0', $Container, 'chown', '-R', '472:0', '/test', '/test-results')

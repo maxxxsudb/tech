@@ -594,3 +594,8 @@ test("вложения включены по умолчанию и выключ�
   assert.equal(t.profileValues("safe").fileUploadsEnabled, false);
   assert.equal(t.profileValues("normal").fileUploadsEnabled, true);
 });
+
+test("распознавание изображений выключено по умолчанию и во всех профилях", () => {
+  assert.equal(t.defaults.imageToTextEnabled, false);
+  for (const profile of Object.keys(t.configurationProfiles)) assert.equal(t.profileValues(profile).imageToTextEnabled, false);
+});

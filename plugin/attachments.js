@@ -157,6 +157,18 @@
     });
   }
 
+  function imageToTextAllowed(settings) {
+    return Boolean(settings && settings.fileUploadsEnabled !== false && settings.imageToTextEnabled === true);
+  }
+
+  function applyImageToTextPolicy(attachments, settings) {
+    if (settings && settings.fileUploadsEnabled === false) return [];
+    const files = attachments || [];
+    if (imageToTextAllowed(settings)) return files;
+    return files.map((item) => item.kind === "image" && (item.asText || item.transcript)
+      ? Object.assign({}, item, { asText: false, transcript: undefined }) : item);
+  }
+
   function buildUserMessage(prompt, images, transport, imageUserMessage) {
     const attachedImages = (images || []).filter((item) => item && item.dataUrl && !item.asText);
     if (!attachedImages.length) return { role: "user", content: prompt };
@@ -181,5 +193,5 @@
     // Запрос, которым изображение с галкой «в текст» превращается в текст до основного вопроса.
   const transcribePrompt = "Перепиши дословно весь текст с изображения (подписи, значения, ошибки, легенды графиков). Затем кратко опиши, что изображено: тип графика, оси, заметные пики и аномалии. Ответь только текстом, без Markdown-таблиц.";
 
-  return { limits, readAttachment, composeText, summaries, buildUserMessage, looksBinary, transcribePrompt };
+  return { limits, readAttachment, composeText, summaries, buildUserMessage, looksBinary, transcribePrompt, imageToTextAllowed, applyImageToTextPolicy };
 });

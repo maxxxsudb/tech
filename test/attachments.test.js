@@ -152,3 +152,20 @@ test("изображение с галкой «в текст» уходит ра
   assert.deepEqual(message, { role: "user", content: "вопрос" });
   assert.equal(attachments.composeText([Object.assign({}, image, { asText: false })]), "");
 });
+
+test("общий запрет распознавания сбрасывает старую галку и текст, но сохраняет изображение", () => {
+  const image = { name: "graph.png", kind: "image", asText: true, transcript: "old text", dataUrl: "data:image/jpeg;base64,AAAA" };
+  const text = { name: "trace.log", kind: "text", content: "log" };
+  for (const settings of [{}, { imageToTextEnabled: false }]) {
+    const files = attachments.applyImageToTextPolicy([image, text], settings);
+    assert.equal(attachments.imageToTextAllowed(settings), false);
+    assert.equal(files[0].asText, false);
+    assert.equal(files[0].transcript, undefined);
+    assert.equal(files[0].dataUrl, image.dataUrl);
+    assert.equal(files[1], text);
+    assert.ok(!attachments.composeText(files).includes("old text"));
+  }
+  assert.equal(image.asText, true);
+  assert.equal(attachments.applyImageToTextPolicy([image], { imageToTextEnabled: true })[0], image);
+  assert.deepEqual(attachments.applyImageToTextPolicy([image], { imageToTextEnabled: true, fileUploadsEnabled: false }), []);
+});
