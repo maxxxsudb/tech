@@ -178,7 +178,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     input: { width: "100%", minHeight: 36, padding: "6px 8px" },
     contextStrip: { display: "flex", gap: 6, alignItems: "center", minWidth: 0, padding: "0 0 4px", fontSize: 12 },
     chip: { minWidth: 0, maxWidth: "100%", borderRadius: 6, border: "1px solid rgba(128,128,128,.24)", background: "rgba(128,128,128,.05)", padding: "4px 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "inherit", fontSize: 12 },
-    welcome: { display: "grid", gap: 12, padding: "22px 10px", minWidth: 0 },
+    welcome: { display: "grid", gap: 12, padding: "14px 10px", minWidth: 0 },
     welcomeCard: { display: "grid", gap: 3, textAlign: "left", width: "100%", padding: "12px 14px", minHeight: 60, borderRadius: 8, border: "1px solid rgba(128,128,128,.25)", background: "rgba(128,128,128,.04)", color: "inherit", cursor: "pointer" },
     progress: { display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(87,148,242,.3)", background: "rgba(87,148,242,.06)", fontSize: 12, flexShrink: 0 },
   };
@@ -2091,7 +2091,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     }, [selectedPanelIds, storageKey]);
 
     React.useEffect(() => {
-      if (historyRef.current && followRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
+      if (historyRef.current && followRef.current) historyRef.current.scrollTop = history.length || pending ? historyRef.current.scrollHeight : 0;
     }, [history, pending, tab]);
 
     React.useEffect(() => {

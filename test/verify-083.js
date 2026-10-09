@@ -30,6 +30,7 @@ const answer = '## Краткий вывод\n\nДашборд помогает 
     await page.waitForSelector('#tech-ai-assistant-launcher'); await page.click('#tech-ai-assistant-launcher');
     await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
     assert.equal(await page.$$eval('[data-testid="tech-ai-welcome"] button', nodes => nodes.length), 3);
+    assert.equal(await page.$eval('[data-testid="tech-ai-history"]', node => node.scrollTop), 0);
     assert.ok((await page.$eval('[data-testid="tech-ai-context-strip"]', node => node.textContent)).includes('Последний час'));
     await page.screenshot({ path: '/test-results/assistant-083-start.png' });
     await page.$eval('[data-testid="tech-ai-welcome"] button:nth-of-type(2)', node => node.click());

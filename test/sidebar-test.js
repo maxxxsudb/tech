@@ -42,7 +42,7 @@ const puppeteer = require('puppeteer');
   if (!candidate) throw new Error(`Sidebar button not found: ${JSON.stringify(buttons)}`);
   console.log(JSON.stringify({ candidate, buttons }, null, 2));
   await page.mouse.click(candidate.x, candidate.y);
-  await page.waitForFunction(() => document.body.innerText.includes('Задайте вопрос по текущему дашборду'), { timeout: 10000 });
+  await page.waitForSelector('[data-testid="tech-ai-welcome"]', { timeout: 10000 });
   await page.screenshot({ path: '/test/ai-assistant-sidebar.png', fullPage: false });
   console.log(JSON.stringify({ sidebarOpened: true, candidate, buttons }, null, 2));
   await browser.close();

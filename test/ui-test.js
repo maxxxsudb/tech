@@ -70,7 +70,7 @@ const puppeteer = require('puppeteer');
   await page.mouse.click(itemRect.x, itemRect.y);
 
   try {
-    await page.waitForFunction(() => document.body.innerText.includes('Задайте вопрос по текущему дашборду'), { timeout: 10000 });
+    await page.waitForSelector('[data-testid="tech-ai-welcome"]', { timeout: 10000 });
   } catch (error) {
     await page.screenshot({ path: '/test/ai-assistant-sidebar-error.png', fullPage: false });
     console.log(JSON.stringify({ errors, failedResponses, body: await page.evaluate(() => document.body.innerText.slice(-4000)) }, null, 2));
