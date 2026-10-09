@@ -599,3 +599,34 @@ test("распознавание изображений выключено по 
   assert.equal(t.defaults.imageToTextEnabled, false);
   for (const profile of Object.keys(t.configurationProfiles)) assert.equal(t.profileValues(profile).imageToTextEnabled, false);
 });
+
+test("Markdown fallback оформляет заголовки, списки и таблицу без дополнительной библиотеки", () => {
+  const html = t.markdownHtml("## Итог\n\n**CPU**: высокий\n\n- Проверить\n- Сравнить\n\n| Панель | Значение |\n| --- | --- |\n| CPU | 95% |");
+  assert.match(html, /<h2>Итог<\/h2>/);
+  assert.match(html, /<strong>CPU<\/strong>/);
+  assert.match(html, /<ul><li>Проверить<\/li><li>Сравнить<\/li><\/ul>/);
+  assert.match(html, /<table>[\s\S]*<th>Панель<\/th>[\s\S]*<td>95%<\/td>/);
+});
+
+test("Markdown fallback не исполняет HTML и сохраняет содержимое inline code", () => {
+  const html = t.fallbackMarkdown('<script>alert(1)</script>\n\n`**literal** <tag>`\n\n[x](javascript:alert)');
+  assert.ok(!html.includes("<script>"));
+  assert.ok(!html.includes("<a "));
+  assert.match(html, /<code>\*\*literal\*\* &lt;tag&gt;<\/code>/);
+});
+
+test("компактный контекст отражает только выбранные панели и настоящий снимок", () => {
+  const context = { panels: [{ id: 1, title: "CPU" }, { id: 2, title: "RAM" }], timeRange: { from: "now-1h", to: "now" } };
+  assert.deepEqual(t.contextSummary(context, [2]), { scope: "Панель: RAM", period: "Последний час", mode: "Без данных" });
+  const summary = t.contextSummary(context, [1, 2], { stats: { loaded: 1, total: 2 }, range: { from: 1000, to: 2000 } });
+  assert.equal(summary.scope, "Панели: 2");
+  assert.equal(summary.mode, "Данные: 1/2");
+  assert.equal(t.contextSummary(context, [2], undefined, { dataMode: "sample" }).mode, "Короткий пример");
+});
+
+test("ошибки API получают короткое понятное объяснение без потери технического текста", () => {
+  assert.equal(t.errorPresentation("HTTP 400 · base64 is not allowed").title, "API не принял запрос");
+  assert.equal(t.errorPresentation("HTTP 502 · Bad gateway").title, "API не ответил");
+  assert.equal(t.errorPresentation("HTTP 429 · quota exceeded").title, "Достигнут лимит API");
+  assert.equal(t.errorPresentation("Запрос остановлен").title, "Запрос остановлен");
+});

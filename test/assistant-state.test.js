@@ -143,3 +143,31 @@ test("Max output tokens 0 не добавляет жёсткий лимит в �
   assert.equal(sent.length, 2);
   assert.equal(sent[0].max_tokens, undefined);
 });
+
+test("стартовый экран имеет три действия и исчезает при отправке", async () => {
+  reset();
+  const welcome = nodes(render()).find(node => node.props["data-testid"] === "tech-ai-welcome");
+  assert.ok(welcome);
+  assert.equal(nodes(welcome).filter(node => node.type === "button").length, 3);
+  let finish;
+  global.fetch = () => new Promise(resolve => { finish = resolve; });
+  button(render(), "Отправить").props.onClick();
+  await settle();
+  assert.ok(!nodes(render()).some(node => node.props["data-testid"] === "tech-ai-welcome"));
+  assert.ok(nodes(render()).some(node => node.props["data-testid"] === "tech-ai-request-status"));
+  assert.ok(button(render(), "Остановить"));
+  finish(response("Answer")); await waitDone();
+  assert.ok(!nodes(render()).some(node => node.props["data-testid"] === "tech-ai-request-status"));
+});
+
+test("ошибка имеет закрытые подробности и действие повторной отправки", async () => {
+  reset();
+  global.fetch = async () => new Response(JSON.stringify({ error: { message: "API_DETAILS_083" } }), { status: 502, headers: { "content-type": "application/json" } });
+  button(render(), "Отправить").props.onClick(); await waitDone();
+  const error = nodes(render()).find(node => node.props["data-testid"] === "tech-ai-error");
+  assert.equal(error.props.role, "alert");
+  const details = nodes(error).find(node => node.type === "details");
+  assert.ok(!details.props.open);
+  assert.ok(nodes(details).some(node => node.children.includes(state[7])));
+  assert.ok(button(render(), "Повторить"));
+});

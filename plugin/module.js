@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.8.2";
+  const PLUGIN_VERSION = "0.8.3";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -133,19 +133,21 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       background: (colors && colors.background && colors.background.primary) || (isLight ? "#ffffff" : "#111217"),
       border: (colors && colors.border && colors.border.medium) || (isLight ? "#d8d9dd" : "#34373d"),
       text: (colors && colors.text && colors.text.primary) || (isLight ? "#24292e" : "#f4f5f5"),
+      muted: (colors && colors.text && colors.text.secondary) || (isLight ? "#62676d" : "#a0a6b0"),
+      link: (colors && colors.text && colors.text.link) || (isLight ? "#1f60c4" : "#5794f2"),
     };
   }
 
   const styles = {
-    root: { display: "flex", flexDirection: "column", width: "100%", maxWidth: "100%", height: "100%", minWidth: 0, minHeight: 0, gap: 10, overflow: "hidden", boxSizing: "border-box" },
+    root: { display: "flex", flexDirection: "column", width: "100%", maxWidth: "100%", height: "100%", minWidth: 0, minHeight: 0, gap: 8, overflow: "hidden", boxSizing: "border-box" },
     header: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0, maxWidth: "100%" },
     history: { flex: "1 1 0", minWidth: 0, minHeight: 0, maxWidth: "100%", overflowX: "hidden", overflowY: "auto", overscrollBehavior: "contain", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: 14, padding: "10px 6px 14px" },
     user: { alignSelf: "flex-end", flexShrink: 0, minWidth: 0, maxWidth: "88%", padding: "10px 14px", lineHeight: 1.45, borderRadius: "12px 12px 3px 12px", background: "#1f60c4", color: "white", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", boxShadow: "0 1px 2px rgba(0,0,0,.18)" },
-    assistant: { alignSelf: "stretch", flexShrink: 0, minWidth: 0, maxWidth: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(128,128,128,.2)", background: "rgba(128,128,128,.08)", overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word", boxSizing: "border-box" },
+    assistant: { alignSelf: "stretch", flexShrink: 0, minWidth: 0, maxWidth: "100%", padding: "16px 18px", borderRadius: 10, border: "1px solid rgba(128,128,128,.2)", background: "rgba(128,128,128,.04)", overflow: "hidden", overflowWrap: "anywhere", wordBreak: "break-word", boxSizing: "border-box" },
     markdown: { minWidth: 0, maxWidth: "100%", lineHeight: 1.6, overflowWrap: "anywhere", wordBreak: "break-word" },
     context: { color: "var(--text-secondary, #999)", fontSize: 12 },
     attachment: { color: "var(--text-secondary, #999)", fontSize: 12, marginTop: 4 },
-    error: { padding: 12, border: "1px solid #e02f44", borderRadius: 8, color: "#e02f44", whiteSpace: "pre-wrap" },
+    error: { padding: 12, border: "1px solid rgba(224,47,68,.45)", borderRadius: 8, background: "rgba(224,47,68,.06)", display: "grid", gap: 8, overflowWrap: "anywhere" },
     composer: { flex: "0 0 auto", display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "end", paddingTop: 8 },
     textarea: { width: "100%", minHeight: 64, maxHeight: 160, resize: "vertical", padding: "10px 12px", lineHeight: 1.4, color: "inherit", background: "rgba(128,128,128,.05)", border: "1px solid rgba(128,128,128,.4)", borderRadius: 8 },
     button: { minHeight: 34, padding: "0 14px", cursor: "pointer", borderRadius: 6, border: "1px solid rgba(128,128,128,.45)", background: "rgba(128,128,128,.16)", color: "inherit" },
@@ -164,7 +166,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     // Подтверждение отправки стоит прямо над полем ввода, чтобы его нельзя было не заметить.
     confirm: { display: "grid", gap: 6, padding: 10, border: "1px solid #5794f2", borderRadius: 8, background: "rgba(87,148,242,.12)", fontSize: 12 },
     primaryButton: { minHeight: 34, padding: "0 16px", cursor: "pointer", borderRadius: 6, border: "1px solid #3d71d9", background: "#3d71d9", color: "white", fontWeight: 600 },
-    linkButton: { padding: 0, cursor: "pointer", border: "none", background: "transparent", color: "#5794f2", textDecoration: "underline", fontSize: 12 },
+    linkButton: { padding: 0, cursor: "pointer", border: "none", background: "transparent", color: "var(--tech-ai-link, #5794f2)", textDecoration: "underline", fontSize: 12 },
     options: { display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 6 },
     proposal: { padding: 12, border: "1px solid #5794f2", borderRadius: 8, display: "grid", gap: 10 },
     step: { padding: "6px 8px", borderLeft: "3px solid #5794f2", fontSize: 12, display: "grid", gap: 4 },
@@ -174,7 +176,34 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     config: { display: "grid", gap: 16, maxWidth: 760, padding: 16 },
     field: { display: "grid", gap: 6 },
     input: { width: "100%", minHeight: 36, padding: "6px 8px" },
+    contextStrip: { display: "flex", gap: 6, alignItems: "center", minWidth: 0, padding: "0 0 4px", fontSize: 12 },
+    chip: { minWidth: 0, maxWidth: "100%", borderRadius: 6, border: "1px solid rgba(128,128,128,.24)", background: "rgba(128,128,128,.05)", padding: "4px 8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "inherit", fontSize: 12 },
+    welcome: { display: "grid", gap: 12, padding: "22px 10px", minWidth: 0 },
+    welcomeCard: { display: "grid", gap: 3, textAlign: "left", width: "100%", padding: "12px 14px", minHeight: 60, borderRadius: 8, border: "1px solid rgba(128,128,128,.25)", background: "rgba(128,128,128,.04)", color: "inherit", cursor: "pointer" },
+    progress: { display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(87,148,242,.3)", background: "rgba(87,148,242,.06)", fontSize: 12, flexShrink: 0 },
   };
+
+  const presentationCss = [
+    ".tech-ai-root button,.tech-ai-root input,.tech-ai-root textarea,.tech-ai-root select { font-family:inherit; }",
+    ".tech-ai-root button { transition:background .12s,border-color .12s; }",
+    ".tech-ai-root button:not(:disabled):hover { filter:brightness(1.12); border-color:#5794f2; }",
+    ".tech-ai-root button:disabled { opacity:.45; cursor:not-allowed; }",
+    ".tech-ai-root button:focus-visible,.tech-ai-root textarea:focus-visible,.tech-ai-root summary:focus-visible { outline:2px solid #5794f2; outline-offset:2px; }",
+    ".tech-ai-answer p { margin:0 0 .85em; } .tech-ai-answer p:last-child { margin-bottom:0; }",
+    ".tech-ai-answer h1,.tech-ai-answer h2,.tech-ai-answer h3,.tech-ai-answer h4 { font-weight:600; line-height:1.35; margin:1.1em 0 .5em; }",
+    ".tech-ai-answer h1 { font-size:1.35em; } .tech-ai-answer h2 { font-size:1.2em; } .tech-ai-answer h3,.tech-ai-answer h4 { font-size:1.05em; }",
+    ".tech-ai-answer .markdown-html > :first-child { margin-top:0; }",
+    ".tech-ai-answer ul,.tech-ai-answer ol { margin:.4em 0 1em; padding-left:1.5em; } .tech-ai-answer li { padding-left:.15em; margin:.35em 0; }",
+    ".tech-ai-answer table { display:block; max-width:100%; overflow-x:auto; border-collapse:collapse; margin:.7em 0 1em; font-size:13px; }",
+    ".tech-ai-answer th,.tech-ai-answer td { padding:8px 10px; text-align:left; border:1px solid rgba(128,128,128,.22); vertical-align:top; }",
+    ".tech-ai-answer th { font-weight:600; background:rgba(128,128,128,.08); }",
+    ".tech-ai-answer :not(pre) > code { padding:2px 5px; border-radius:4px; background:rgba(128,128,128,.1); font-size:.9em; }",
+    ".tech-ai-answer blockquote { margin:.8em 0; padding:6px 12px; border-left:3px solid #5794f2; background:rgba(87,148,242,.05); }",
+    ".tech-ai-answer a { color:var(--tech-ai-link,#5794f2); text-underline-offset:3px; } .tech-ai-answer hr { border:0; border-top:1px solid rgba(128,128,128,.25); margin:1em 0; }",
+    ".tech-ai-root .tech-ai-progress-dot { width:7px; height:7px; border-radius:50%; background:#5794f2; flex-shrink:0; animation:tech-ai-pulse 1.4s ease-in-out infinite; }",
+    "@keyframes tech-ai-pulse { 50% { opacity:.35; } } @media(prefers-reduced-motion:reduce) { .tech-ai-root .tech-ai-progress-dot { animation:none; } }",
+    "@media(max-width:480px) { .tech-ai-root .tech-ai-period-chip { display:none; } }",
+  ].join("\n");
 
   function normalizePath(path) {
     const value = String(path || defaults.apiPath).trim();
@@ -1671,7 +1700,73 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         return grafanaData.renderMarkdown(text);
       } catch (_) {}
     }
-    return escapeHtml(text).replace(/\n/g, "<br>");
+    return fallbackMarkdown(text);
+  }
+
+  function inlineMarkdown(text) {
+    const code = [];
+    let value = String(text).replace(/`([^`]+)`/g, (_match, content) => `\u0000${code.push(`<code>${escapeHtml(content)}</code>`) - 1}\u0000`);
+    value = escapeHtml(value)
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    return value.replace(/\u0000(\d+)\u0000/g, (_match, index) => code[Number(index)] || "");
+  }
+
+  function fallbackMarkdown(text) {
+    const lines = String(text || "").replace(/\r\n/g, "\n").split("\n"), html = [];
+    const cells = (line) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+    const special = (line) => !line.trim() || /^\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|>\s?|---+$)/.test(line);
+    for (let index = 0; index < lines.length;) {
+      const line = lines[index];
+      if (!line.trim()) { index++; continue; }
+      const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+      if (heading) { html.push(`<h${heading[1].length}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`); index++; continue; }
+      if (line.includes("|") && index + 1 < lines.length && cells(lines[index + 1]).every((cell) => /^:?-{3,}:?$/.test(cell))) {
+        const headers = cells(line); index += 2;
+        const rows = [];
+        while (index < lines.length && lines[index].includes("|") && lines[index].trim()) rows.push(`<tr>${cells(lines[index++]).map((cell) => `<td>${inlineMarkdown(cell)}</td>`).join("")}</tr>`);
+        html.push(`<table><thead><tr>${headers.map((cell) => `<th>${inlineMarkdown(cell)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`);
+        continue;
+      }
+      const list = /^\s*([-*+]|\d+[.)])\s+(.+)$/.exec(line);
+      if (list) {
+        const ordered = /^\d/.test(list[1]), items = [];
+        while (index < lines.length) {
+          const item = /^\s*([-*+]|\d+[.)])\s+(.+)$/.exec(lines[index]);
+          if (!item || /^\d/.test(item[1]) !== ordered) break;
+          items.push(`<li>${inlineMarkdown(item[2])}</li>`); index++;
+        }
+        const tag = ordered ? "ol" : "ul"; html.push(`<${tag}>${items.join("")}</${tag}>`); continue;
+      }
+      if (/^>/.test(line)) { html.push(`<blockquote>${inlineMarkdown(line.replace(/^>\s?/, ""))}</blockquote>`); index++; continue; }
+      if (/^\s*---+\s*$/.test(line)) { html.push("<hr>"); index++; continue; }
+      const paragraph = [line]; index++;
+      while (index < lines.length && !special(lines[index]) && !(lines[index].includes("|") && lines[index + 1] && cells(lines[index + 1]).every((cell) => /^:?-{3,}:?$/.test(cell)))) paragraph.push(lines[index++]);
+      html.push(`<p>${paragraph.map(inlineMarkdown).join("<br>")}</p>`);
+    }
+    return html.join("\n");
+  }
+
+  function errorPresentation(error) {
+    const text = String(error || "");
+    if (/Запрос остановлен/.test(text)) return { title: "Запрос остановлен", hint: "Можно изменить вопрос или повторить отправку." };
+    if (/обрезан лимитом токенов/.test(text)) return { title: "Распознавание не завершено", hint: "Увеличьте Max output tokens в настройках или отправьте изображение без преобразования в текст." };
+    if (/HTTP 429|quota|rate.?limit/i.test(text)) return { title: "Достигнут лимит API", hint: "Повторите позже или проверьте квоту подключения." };
+    if (/HTTP (401|403)/.test(text)) return { title: "Нет доступа к API", hint: "Проверьте ключ и права подключения в настройках плагина." };
+    if (/HTTP (502|503|504)|timeout|таймаут|Failed to fetch/i.test(text)) return { title: "API не ответил", hint: "Проверьте доступность модели и таймаут подключения. Вопрос сохранён для повторной отправки." };
+    if (/HTTP 400/.test(text)) return { title: "API не принял запрос", hint: "Проверьте поддерживаемый формат и параметры модели. Причина ответа API — в подробностях." };
+    return { title: "Не удалось выполнить запрос", hint: text.split("\n")[0].slice(0, 180) || "Попробуйте повторить отправку." };
+  }
+
+  function contextSummary(context, selectedIds, snapshot, preview) {
+    const selected = availablePanels(context).filter((panel) => (selectedIds || []).includes(Number(panel.id)));
+    const scope = selected.length === 1 ? `Панель: ${selected[0].title || "Без названия"}` : `Панели: ${selected.length}`;
+    const range = context && context.timeRange || {}, from = range.from, to = range.to;
+    const known = { "now-1h": "Последний час", "now-6h": "Последние 6 часов", "now-24h": "Последние 24 часа", "now-7d": "Последние 7 дней" };
+    const period = snapshot && snapshot.range ? `${new Date(snapshot.range.from).toLocaleString()} — ${new Date(snapshot.range.to).toLocaleString()}` : to === "now" && known[from] ? known[from] : from && to ? `${from} — ${to}` : "Диапазон дашборда";
+    const mode = preview ? ({ structure: "Только структура", sample: "Короткий пример", investigation: "Расследование" }[preview.dataMode] || "По настройкам") : snapshot && snapshot.stats && snapshot.stats.loaded ? `Данные: ${snapshot.stats.loaded}/${snapshot.stats.total}` : "Без данных";
+    return { scope, period, mode };
   }
 
   function splitContent(content) {
@@ -1711,10 +1806,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
 
   function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch(() => legacyCopyText(text));
-      return;
+      return navigator.clipboard.writeText(text).then(() => true).catch(() => legacyCopyText(text));
     }
-    legacyCopyText(text);
+    return Promise.resolve(legacyCopyText(text));
   }
 
   function legacyCopyText(text) {
@@ -1723,8 +1817,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     Object.assign(textarea.style, { position: "fixed", opacity: "0", pointerEvents: "none" });
     document.body.appendChild(textarea);
     textarea.select();
-    try { document.execCommand("copy"); } catch (_) {}
+    let copied = false;
+    try { copied = document.execCommand("copy"); } catch (_) {}
     textarea.remove();
+    return copied;
   }
 
   function diagnosticPayload(settings, lastRequest, error, includeIdentity) {
@@ -1744,19 +1840,23 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   }
 
   function CodeBlock(props) {
+    const [copyStatus, setCopyStatus] = React.useState("");
+    const timer = React.useRef(null);
+    React.useEffect(() => () => clearTimeout(timer.current), []);
     const datasource = datasourceForLanguage(props.context, props.lang);
     const url = datasource ? exploreUrl(props.context, datasource, exploreQueryFor(props.lang, props.code)) : undefined;
-    return h("div", { style: styles.codeBlock },
-      h("pre", { style: styles.pre }, props.code),
-      h("div", { style: { display: "flex", gap: 6 } },
-        h("button", { type: "button", style: styles.smallButton, onClick: () => copyText(props.code) }, "Копировать"),
+    return h("div", { style: Object.assign({}, styles.codeBlock, { border: "1px solid rgba(128,128,128,.25)", borderRadius: 8, overflow: "hidden" }), className: "tech-ai-code", "data-testid": "tech-ai-code" },
+      h("div", { style: { display: "flex", gap: 6, alignItems: "center", padding: "6px 8px", background: "rgba(128,128,128,.06)" } },
+        h("span", { style: Object.assign({}, styles.context, { marginRight: "auto" }) }, (props.lang || "Запрос").toUpperCase()),
+        h("button", { type: "button", style: styles.smallButton, "data-testid": "tech-ai-copy-code", onClick: async () => { setCopyStatus(await copyText(props.code) ? "Скопировано" : "Не удалось"); clearTimeout(timer.current); timer.current = setTimeout(() => setCopyStatus(""), 1800); } }, copyStatus || "Копировать"),
         url ? h("a", { href: url, target: "_blank", rel: "noreferrer", style: Object.assign({}, styles.smallButton, { display: "inline-flex", alignItems: "center", textDecoration: "none" }) }, "Открыть в Explore") : null
-      )
+      ),
+      h("pre", { style: Object.assign({}, styles.pre, { borderRadius: 0, background: "rgba(128,128,128,.06)", whiteSpace: "pre", wordBreak: "normal", overflowWrap: "normal", padding: "12px" }) }, h("code", { style: { whiteSpace: "pre", wordBreak: "normal", overflowWrap: "normal", fontSize: "inherit" } }, props.code))
     );
   }
 
   function MessageContent(props) {
-    return h("div", { style: styles.markdown },
+    return h("div", { style: styles.markdown, className: "tech-ai-answer", "data-testid": "tech-ai-answer" },
       splitContent(props.content).map((part, index) => {
         if (part.type === "text") return h("div", { key: index, className: "markdown-html", dangerouslySetInnerHTML: { __html: markdownHtml(part.text) } });
         if (part.lang === "dashboard-json" || part.lang === "grafana-query") return null;
@@ -1926,6 +2026,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const [sendPreview, setSendPreview] = React.useState();
     const [tab, setTab] = React.useState("chat");
     const [includeIdentityInDiagnostics, setIncludeIdentityInDiagnostics] = React.useState(false);
+    const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
+    const [requestStage, setRequestStage] = React.useState("");
     const snapshotRef = React.useRef(undefined);
     const historyRef = React.useRef(null);
     const rootRef = React.useRef(null);
@@ -1937,6 +2039,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const followRef = React.useRef(true);
     const composerRef = React.useRef(null);
     const requestGeneration = React.useRef(0);
+    const requestStarted = React.useRef(0);
 
     React.useEffect(() => {
       let cancelled = false;
@@ -1963,6 +2066,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     React.useEffect(() => {
       if (storageKey) saveHistory(storageKey, history);
     }, [history, storageKey]);
+
+    React.useEffect(() => {
+      if (!busy) return;
+      const tick = () => setElapsedSeconds(Math.floor((Date.now() - requestStarted.current) / 1000));
+      tick();
+      const timer = setInterval(tick, 1000);
+      return () => clearInterval(timer);
+    }, [busy]);
 
     // Блок «Действия» по умолчанию свёрнут. Если он был открыт, на время подтверждения отправки
     // он сворачивается и после отправки или отмены открывается снова.
@@ -2203,6 +2314,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       setError("");
       setRetry(undefined);
       const started = Date.now();
+      requestStarted.current = started;
+      setElapsedSeconds(0);
+      setRequestStage(includeScreenshot && settings.screenshotEnabled !== false ? "Выберите вкладку для снимка" : "Готовим запрос");
       let firstTokenMs;
       let partial = { content: "", reasoning: "", steps: [] };
       let userMessage;
@@ -2220,7 +2334,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           const transcribed = [];
           for (const item of requestFiles) {
             if (item.kind !== "image" || !item.asText || item.transcript) { transcribed.push(item); continue; }
-            setPending({ content: `Распознаём «${item.name}» в текст…`, reasoning: "", steps: [] });
+            setRequestStage(`Распознаём «${item.name}»`);
             try {
               const body = { model: modelName(settings), stream: false, messages: [imageUserMessage(attachmentTools.transcribePrompt, item, settings.imageTransport)] };
               const maxTokens = Number(settings.maxTokens);
@@ -2250,6 +2364,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         const key = dataPlan ? snapshotKey(selectedContext, selectedPanelIds, settings, dataPlan) : undefined;
         let snapshot = key && snapshotRef.current && !snapshotRef.current.stale && snapshotRef.current.key === key ? snapshotRef.current : undefined;
         if (dataPlan && !snapshot) {
+          setRequestStage("Получаем данные панелей");
           const range = limitedRange(selectedContext, dataPlan.rangeHours);
           const count = investigationEstimate(settings, selectedContext, dataPlan).panels;
           const dataStarted = Date.now();
@@ -2304,12 +2419,15 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           model: modelName(settings),
         });
         setLastRequest(request);
+        setDataProgress(undefined);
+        setRequestStage("Модель готовит ответ");
         const messages = plan.messages.concat([attachmentTools.buildUserMessage(modelPrompt, imageFiles, settings.imageTransport, imageUserMessage)]);
         const result = await runAssistant(settings, requestContext, plan.contextJson, messages, {
           queries: Boolean(action && action.queries && action.dataMode !== "structure"),
           signal: controller.signal,
           onUpdate: (update) => {
             if (!isCurrent()) return;
+            setRequestStage(update.content ? "Получаем ответ" : (update.steps || []).length ? "Модель анализирует результаты запросов" : "Модель готовит ответ");
             if (firstTokenMs === undefined && (update.content || update.reasoning)) firstTokenMs = Date.now() - started;
             partial = update;
             setPending(Object.assign({}, update));
@@ -2372,6 +2490,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       if (busy) stop();
       abortRef.current = null;
       setBusy(false);
+      setElapsedSeconds(0);
+      setRequestStage("");
       setPending(undefined);
       setDataProgress(undefined);
       setInvestigationSetup(undefined);
@@ -2403,9 +2523,15 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
 
     function messageView(message, index, isPending) {
       if (message.role === "user") {
+        const actionLabel = (quickPrompts.find((action) => action.prompt === message.content) || {}).label;
         return h("div", { key: index, style: Object.assign({}, styles.user, message.failed ? { opacity: 0.6 } : null) },
-          message.content + (message.note ? `\n${message.note}` : "") + (message.failed ? "\n⚠ Без ответа, в историю модели не попадёт" : ""),
-          (message.attachments || []).length ? h("div", { style: { fontSize: 12, marginTop: 6 } }, message.attachments.map((item) => `${item.name} · ${Math.ceil(item.bytes / 1024)} КБ`).join("; ")) : null,
+          (actionLabel || message.content) + (message.failed ? "\nБез ответа — не отправляется в историю модели" : ""),
+          actionLabel || message.note || (message.attachments || []).length ? h("details", { style: { fontSize: 12, marginTop: 8, opacity: .85 } },
+            h("summary", { style: { cursor: "pointer" } }, actionLabel ? "Вопрос и контекст" : "Контекст отправки"),
+            actionLabel ? h("div", { style: { marginTop: 6 } }, message.content) : null,
+            message.note ? h("div", { style: { marginTop: 6 } }, message.note.trim()) : null,
+            (message.attachments || []).length ? h("div", null, message.attachments.map((item) => `${item.name} · ${Math.ceil(item.bytes / 1024)} КБ`).join("; ")) : null
+          ) : null,
           h("button", { type: "button", style: Object.assign({}, styles.smallButton, { marginTop: 6 }), disabled: busy, onClick: () => editMessage(index), "data-testid": "tech-ai-edit-message" }, "Изменить вопрос")
         );
       }
@@ -2414,7 +2540,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         h("div", { style: styles.assistant },
           message.reasoning ? h("details", { style: styles.context }, h("summary", { style: { cursor: "pointer" } }, isPending && !message.content ? "Размышляет…" : "Размышления модели"), h("div", { style: { whiteSpace: "pre-wrap" } }, message.reasoning)) : null,
           (message.steps || []).map((step, stepIndex) => h(StepView, { key: `step-${stepIndex}`, step, context })),
-          isPending ? h("div", { style: { whiteSpace: "pre-wrap" } }, stripPendingQueries(content)) : h(MessageContent, { content, context }),
+          h(MessageContent, { content: isPending ? stripPendingQueries(content) : content, context }),
           !isPending && content ? h("div", { style: Object.assign({}, styles.quickActions, { marginTop: 8, marginBottom: 0 }) },
             h("button", { type: "button", style: styles.smallButton, onClick: () => copyText(content) }, "Копировать ответ"),
             !message.local ? h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: () => regenerate(index), "data-testid": "tech-ai-regenerate" }, "Перегенерировать") : null,
@@ -2438,6 +2564,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const filesOn = Boolean(settings && settings.fileUploadsEnabled !== false);
     const imageToTextOn = attachmentTools.imageToTextAllowed(settings);
     const setupOpen = Boolean(investigationSetup && investigationStats);
+    const compactContext = contextSummary(withPageState(context), selectedPanelIds, snapshotInfo, sendPreview);
+    const visibleError = errorPresentation(error);
     const statsLine = lastRequest
       ? `Последний запрос ≈${(lastRequest.totalTokens / 1000).toFixed(1)}k ток.${lastRequest.windowTokens ? ` из ${(lastRequest.windowTokens / 1000).toFixed(1)}k` : ""}` +
         (lastRequest.reductions.length ? ` · сжато: ${lastRequest.reductions.join(", ")}` : "") +
@@ -2453,30 +2581,41 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         (lastRequest.screenshot ? ` · снимок: ${lastRequest.screenshot.format} ${lastRequest.screenshot.width}×${lastRequest.screenshot.height}, ${Math.ceil(lastRequest.screenshot.bytes / 1024)} КБ` : "")
       : "";
 
-    return h("div", { style: styles.root, ref: rootRef,
+    return h("div", { style: Object.assign({}, styles.root, { "--text-secondary": themeColors().muted, "--tech-ai-link": themeColors().link }), ref: rootRef, className: "tech-ai-root",
       onDragOver: (event) => { if (filesOn && event.dataTransfer && Array.from(event.dataTransfer.types).includes("Files")) event.preventDefault(); },
       onDrop: (event) => { if (filesOn && event.dataTransfer && event.dataTransfer.files.length) { event.preventDefault(); addFiles(event.dataTransfer.files); } },
     },
+      h("style", null, presentationCss),
       h("div", { style: styles.header },
-        h("div", { style: styles.context }, context
-          ? `${context.dashboardTitle || "Текущая страница Grafana"}${context.panel ? ` · ${context.panel.title}` : ""}${settings ? ` · ${modelName(settings) || "модель не задана"}${settings.streaming !== false && isStreamUnsupported(settings) ? " (без stream)" : ""}` : ""}`
-          : "Загрузка контекста…"),
+        h("div", { style: { fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, title: context && context.dashboardTitle }, context ? context.dashboardTitle || "Текущая страница Grafana" : "Загрузка контекста…"),
         history.length || busy ? h("button", { type: "button", style: styles.smallButton, onClick: newDialog }, "Новый диалог") : null
       ),
+      context ? h("div", { style: styles.contextStrip, "data-testid": "tech-ai-context-strip" },
+        h("button", { type: "button", style: Object.assign({}, styles.chip, { flex: "1 1 auto", textAlign: "left", cursor: "pointer" }), onClick: () => setTab("context"), title: `${compactContext.scope} · ${compactContext.period} · ${compactContext.mode}. Изменить контекст` }, compactContext.scope),
+        h("span", { style: Object.assign({}, styles.chip, { maxWidth: "35%" }), className: "tech-ai-period-chip", title: compactContext.period }, compactContext.period),
+        h("span", { style: Object.assign({}, styles.chip, { flexShrink: 0 }), title: "Состав текущего контекста" }, compactContext.mode)
+      ) : null,
       h("div", { style: styles.tabs, role: "tablist" },
         [["chat", "Чат"], ["context", `Контекст · панели ${selectedPanelIds.length}/${panels.length}`], ["diag", "Диагностика"]].map(([id, label]) =>
           h("button", { key: id, type: "button", role: "tab", "aria-selected": tab === id, "data-testid": `tech-ai-tab-${id}`, style: tab === id ? styles.tabActive : styles.tab, onClick: () => setTab(id) }, label)
         )
       ),
-      tab === "chat" && (error || dataProgress || setupOpen) ? h("div", { style: setupOpen ? styles.tabBody : styles.notices, "data-testid": "tech-ai-notices" },
-      error ? h("div", { style: styles.error, "data-testid": "tech-ai-error" },
-        error,
-        h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 } },
-          retry && !busy ? h("button", { type: "button", style: styles.smallButton, onClick: () => send(retry.prompt, retry.action) }, "Повторить") : null,
+      busy ? h("div", { style: styles.progress, role: "status", "aria-live": "polite", "data-testid": "tech-ai-request-status" },
+        h("span", { className: "tech-ai-progress-dot", "aria-hidden": true }),
+        h("span", { style: { flex: 1, overflowWrap: "anywhere" }, "data-testid": dataProgress ? "tech-ai-data-progress" : undefined }, dataProgress ? `Получаем данные: ${dataProgress.completed} из ${dataProgress.total}` : requestStage || "Модель готовит ответ"),
+        h("span", { style: Object.assign({}, styles.context, { flexShrink: 0 }), "data-testid": "tech-ai-elapsed", "aria-live": "off" }, `${elapsedSeconds} с`)
+      ) : null,
+      tab === "chat" && (error || setupOpen) ? h("div", { style: setupOpen ? styles.tabBody : styles.notices, "data-testid": "tech-ai-notices" },
+      error ? h("div", { style: styles.error, role: "alert", "data-testid": "tech-ai-error" },
+        h("strong", { style: { color: "#e02f44" } }, visibleError.title),
+        h("div", { style: { fontSize: 13, lineHeight: 1.5 } }, visibleError.hint),
+        retry && !busy ? h("div", null, h("button", { type: "button", style: styles.smallButton, onClick: () => send(retry.prompt, retry.action) }, "Повторить")) : null,
+        h("details", { style: styles.context, "data-testid": "tech-ai-error-details" },
+          h("summary", { style: { cursor: "pointer" } }, "Технические подробности"),
+          h("pre", { style: Object.assign({}, styles.pre, { maxHeight: 140, margin: "8px 0" }) }, error),
           h("button", { type: "button", style: styles.smallButton, onClick: () => copyText(JSON.stringify(diagnosticPayload(settings, lastRequest, error, includeIdentityInDiagnostics), null, 2)) }, "Копировать диагностику")
         )
       ) : null,
-      dataProgress ? h("div", { style: styles.context, "data-testid": "tech-ai-data-progress" }, `Получаем данные: ${dataProgress.completed} из ${dataProgress.total}`) : null,
       investigationSetup && investigationStats ? h("div", { style: styles.proposal, "data-testid": "tech-ai-investigation-setup" },
         h("strong", null, investigationSetup.comparePeriods ? "Сравнение периодов" : "Параметры расследования"),
         h("div", { style: styles.context }, "Повторные запросы к datasource выполнятся только после подтверждения."),
@@ -2513,9 +2652,22 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         followRef.current = near;
         setFollowLatest(near);
       } },
-        history.length === 0 && !pending ? h("div", { style: styles.context }, "Задайте вопрос по текущему дашборду или панели.") : null,
+        history.length === 0 && !pending && !busy ? h("div", { style: styles.welcome, "data-testid": "tech-ai-welcome" },
+          h("div", { style: { display: "grid", gap: 6 } },
+            h("span", { style: { color: "#5794f2", fontSize: 12, fontWeight: 600, letterSpacing: ".04em" } }, "AI · АНАЛИЗ GRAFANA"),
+            h("strong", { style: { fontSize: 21, lineHeight: 1.3 } }, selectedPanelIds.length === 1 ? "Разберём вашу панель" : context && context.dashboardUid ? "Разберём ваш дашборд" : "Разберём текущий контекст"),
+            h("span", { style: Object.assign({}, styles.context, { fontSize: 13, lineHeight: 1.5 }) }, "Начните с действия или задайте свой вопрос. Перед отправкой можно проверить контекст.")
+          ),
+          [
+            { label: "Объяснить", description: "Назначение, запросы и фактические данные", action: quickPrompts[0] },
+            { label: "Найти проблему", description: "Гипотезы, доказательства и следующие проверки", action: quickPrompts[3] },
+            { label: "Помочь с запросом", description: "Написать запрос для выбранной панели", action: quickPrompts.find((item) => item.label === "Написать запрос") },
+          ].map((item) => h("button", { key: item.label, type: "button", style: styles.welcomeCard, disabled: !ready, onClick: () => item.action.investigation ? openInvestigation(item.action) : prepareSend(item.action.prompt, item.action) },
+            h("strong", { style: { fontSize: 14 } }, item.label), h("span", { style: styles.context }, item.description)
+          ))
+        ) : null,
         history.map((message, index) => messageView(message, index, false)),
-        pending ? messageView(Object.assign({ role: "assistant" }, pending), "pending", true) : null
+        pending && (pending.content || pending.reasoning || (pending.steps || []).length) ? messageView(Object.assign({ role: "assistant" }, pending), "pending", true) : null
       ),
       !followLatest ? h("button", { type: "button", style: Object.assign({}, styles.smallButton, { position: "absolute", right: 12, bottom: 8, background: themeColors().background, boxShadow: "0 2px 12px rgba(0,0,0,.2)" }), onClick: jumpToLatest, "data-testid": "tech-ai-latest" }, "↓ К последнему сообщению") : null
       ) : null,
@@ -2561,6 +2713,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         ) : null
       ) : null,
       tab === "diag" ? h("div", { style: styles.tabBody, "data-testid": "tech-ai-diagnostics-tab" },
+        settings ? h("div", { style: styles.context }, `Модель: ${modelName(settings) || "не задана"}${settings.streaming !== false && isStreamUnsupported(settings) ? " · stream недоступен, используется обычный ответ" : ""}`) : null,
         statsLine ? h("div", { style: Object.assign({}, styles.context, { marginBottom: 6, color: lastRequest.windowTokens && lastRequest.totalTokens > lastRequest.windowTokens ? "#e02f44" : styles.context.color }) }, statsLine) : h("div", { style: styles.context }, "Запросов к модели ещё не было."),
         lastRequest ? h("details", { style: styles.context },
         h("summary", { style: { cursor: "pointer" } }, `Последний отправленный контекст · ${lastRequest.panels.map((panel) => panel.title || `#${panel.id}`).join(", ") || "без панелей"}`),
@@ -2658,7 +2811,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             },
           }),
           busy
-            ? h("button", { type: "button", style: styles.stopButton, onClick: stop }, "Стоп")
+            ? h("button", { type: "button", style: styles.stopButton, onClick: stop }, "Остановить")
             : h("button", { type: "button", style: styles.button, disabled: !input.trim() || !ready || readingFiles, onClick: () => prepareSend() }, "Отправить")
         )
       )
@@ -3017,9 +3170,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     "#tech-ai-assistant-drawer pre, #tech-ai-assistant-drawer code { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }",
     // Сообщения не сжимаются под высоту истории, иначе длинный ответ обрезается без прокрутки.
     "#tech-ai-assistant-drawer [data-testid=\"tech-ai-history\"] > * { flex-shrink: 0; }",
-    "#tech-ai-assistant-drawer .markdown-html h1 { font-size: 1.3em; margin: .5em 0 .35em; }",
-    "#tech-ai-assistant-drawer .markdown-html h2 { font-size: 1.15em; margin: .6em 0 .3em; }",
-    "#tech-ai-assistant-drawer .markdown-html h3, #tech-ai-assistant-drawer .markdown-html h4 { font-size: 1.02em; margin: .5em 0 .25em; }",
   ].join("\n");
 
   function openDrawer() {
@@ -3199,6 +3349,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
+    __test: { fallbackMarkdown, markdownHtml, contextSummary, errorPresentation, presentationCss, loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
   };
 });
