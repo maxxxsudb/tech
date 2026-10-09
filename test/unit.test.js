@@ -3,7 +3,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 
-function loadModule() {
+function loadModule(grafanaDataOverrides) {
   let factory;
   global.define = (_deps, fn) => { factory = fn; };
   delete require.cache[require.resolve(path.join(__dirname, "../plugin/module.js"))];
@@ -23,7 +23,7 @@ function loadModule() {
       return match ? { valueOf: () => NOW - Number(match[1]) * (match[2] === "h" ? 3600e3 : 86400e3) } : undefined;
     },
   };
-  const grafanaData = { AppPlugin, BusEventWithPayload: class {}, dateMath };
+  const grafanaData = Object.assign({ AppPlugin, BusEventWithPayload: class {}, dateMath }, grafanaDataOverrides);
   const grafanaRuntime = { config: { appSubUrl: "/crf/dashboard", bootData: { user: { orgId: 1, orgRole: "Admin" } } } };
   const React = { createElement: () => null, Fragment: "Fragment" };
   return factory(grafanaData, grafanaRuntime, React, {}, require("../plugin/attachments.js"), require("../plugin/conversation.js"), require("../plugin/query-tools.js")).__test;
@@ -872,6 +872,82 @@ test("единица мини-графика: override по имени ряда 
   assert.equal(t.panelUnit(panel, { name: "Memory", refId: "A" }), "bytes");
   assert.equal(t.panelUnit(panel, { name: "Latency", refId: "B" }), "s");
   assert.equal(t.panelUnit({}, { name: "x" }), undefined);
+});
+
+test("явный override единицы мини-графика важнее единицы datasource", () => {
+  const panel = { fieldConfig: { defaults: { unit: "bytes" }, overrides: [
+    { matcher: { id: "byName", options: "Memory" }, properties: [{ id: "unit", value: "percentunit" }] },
+  ] } };
+  assert.equal(t.panelUnit(panel, { name: "Memory", unit: "bytes", refId: "A" }), "percentunit");
+});
+
+test("override по исходному имени поля меняет только локальную подпись, не сводку модели", async () => {
+  const original = global.fetch;
+  const frame = rawSeries({ pod: "api1" }, [0.1, 0.25, 0.5]);
+  Object.assign(frame.schema.fields[1], { name: "Memory", config: { unit: "bytes" } });
+  global.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ results: { A: { status: 200, frames: [frame] } } }) });
+  try {
+    const panel = { id: 1, title: "Memory", type: "timeseries", datasource: { type: "prometheus", uid: "prom" }, targets: [{ refId: "A", expr: "memory" }], fieldConfig: { defaults: { unit: "bytes" }, overrides: [
+      { matcher: { id: "byName", options: "Memory" }, properties: [{ id: "unit", value: "percentunit" }] },
+    ] } };
+    const charts = [];
+    const panelData = await t.loadPanelData(t.defaults, { timeRange: { from: "now-1h", to: "now" }, panels: [panel] }, { charts });
+    const chart = charts[0].series[0];
+    const summary = panelData[0].results[0].result.series[0];
+    assert.equal(chart.name, "pod=api1");
+    assert.equal(chart.fieldName, "Memory");
+    assert.equal(chart.frameRefId, "A");
+    assert.equal(chart.unit, "bytes");
+    assert.equal(chart.displayUnit, "percentunit");
+    assert.equal(summary.unit, "bytes");
+    assert.equal(summary.name, "pod=api1");
+    ["displayUnit", "fieldName", "frameRefId"].forEach((key) => assert.equal(Object.hasOwn(summary, key), false));
+    const verified = t.chartsForContext(charts, JSON.stringify({ panelData }));
+    assert.equal(verified.length, 1);
+    assert.deepEqual(verified[0].series, [chart]);
+  } finally {
+    global.fetch = original;
+  }
+});
+
+test("единица datasource важнее defaults, но override по refId имеет приоритет", () => {
+  const panel = { fieldConfig: { defaults: { unit: "percentunit" }, overrides: [
+    { matcher: { id: "byFrameRefID", options: "A" }, properties: [{ id: "unit", value: "percentunit" }] },
+  ] } };
+  assert.equal(t.panelUnit({ fieldConfig: { defaults: { unit: "bytes" } } }, { name: "Latency", unit: "s", refId: "A" }), "s");
+  assert.equal(t.panelUnit(panel, { name: "CPU", unit: "percent", refId: "A", frameRefId: "A" }), "percentunit");
+  assert.equal(t.panelUnit(panel, { name: "CPU", unit: "percent", refId: "B", frameRefId: "B" }), "percent");
+});
+
+test("override по имени Grafana учитывает labels без изменения имени в контексте модели", async () => {
+  let displayNameCalls = 0;
+  const module = loadModule({ getFieldDisplayName: (field) => {
+    if (field.type !== "number") return field.name;
+    displayNameCalls += 1;
+    return "api-6";
+  } });
+  const original = global.fetch;
+  const frame = rawSeries({ pod: "api-6" }, [0.1, 0.25, 0.5]);
+  frame.schema.fields[1].config = { unit: "bytes" };
+  global.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ results: { A: { status: 200, frames: [frame] } } }) });
+  try {
+    const panel = { id: 1, title: "Поды", type: "timeseries", datasource: { type: "prometheus", uid: "prom" }, targets: [{ refId: "A", expr: "memory" }], fieldConfig: { defaults: { unit: "bytes" }, overrides: [
+      { matcher: { id: "byName", options: "api-6" }, properties: [{ id: "unit", value: "percentunit" }] },
+    ] } };
+    const charts = [];
+    const panelData = await module.loadPanelData(module.defaults, { timeRange: { from: "now-1h", to: "now" }, panels: [panel] }, { charts });
+    const chart = charts[0].series[0];
+    const summary = panelData[0].results[0].result.series[0];
+    assert.ok(displayNameCalls > 0);
+    assert.equal(chart.unit, "bytes");
+    assert.equal(chart.displayUnit, "percentunit");
+    assert.equal(summary.name, "pod=api-6");
+    assert.equal(summary.unit, "bytes");
+    assert.deepEqual(summary, module.summarizeQueryResult({ status: 200, frames: [frame] }).series[0]);
+    assert.deepEqual(module.chartsForContext(charts, JSON.stringify({ panelData }))[0].series, [chart]);
+  } finally {
+    global.fetch = original;
+  }
 });
 
 test("при переполнении sessionStorage история сохраняется без мини-графиков", () => {

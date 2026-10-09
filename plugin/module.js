@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.8.6";
+  const PLUGIN_VERSION = "0.8.7";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -802,14 +802,16 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     return result;
   }
 
-  // Prometheus и Loki не передают единицу во frame: она задана в fieldConfig панели (defaults или override по имени/refId).
+  // Defaults дополняют frame, а совпавшие overrides имеют приоритет, как в Grafana.
   function panelUnit(panel, series) {
     const config = (panel && panel.fieldConfig) || {};
-    let unit = config.defaults && config.defaults.unit;
+    let unit = series.unit || (config.defaults && config.defaults.unit);
+    const displayNames = [series.name, series.fieldDisplayName];
     (config.overrides || []).forEach((override) => {
       const matcher = override && override.matcher || {};
-      const matches = (matcher.id === "byName" || matcher.id === "byDisplayName") ? matcher.options === series.name
-        : matcher.id === "byFrameRefID" ? matcher.options === series.refId : false;
+      const matches = matcher.id === "byName" ? [series.fieldName].concat(displayNames).includes(matcher.options)
+        : matcher.id === "byDisplayName" ? displayNames.includes(matcher.options)
+        : matcher.id === "byFrameRefID" ? matcher.options === (series.frameRefId || series.refId) : false;
       if (!matches) return;
       const property = (override.properties || []).find((item) => item && item.id === "unit" && item.value);
       if (property) unit = property.value;
@@ -817,7 +819,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     return unit || undefined;
   }
 
-  function summarizeSeries(field, schema, times, values, recent, charts) {
+  function summarizeSeries(field, schema, times, values, recent, charts, allFrames) {
     const points = [];
     for (let index = 0; index < values.length; index += 1) {
       const value = values[index];
@@ -837,9 +839,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const first = points[0];
     const last = points[points.length - 1];
     if (charts && points.length > 1) {
+      let fieldDisplayName = field.config && (field.config.displayName || field.config.displayNameFromDS);
+      if (typeof grafanaData.getFieldDisplayName === "function") {
+        try { fieldDisplayName = grafanaData.getFieldDisplayName(field, schema, allFrames); } catch (_) {}
+      }
       const chartPoints = times.map((time, index) => [Number(time), typeof values[index] === "number" && Number.isFinite(values[index]) ? values[index] : null])
         .filter((point) => Number.isFinite(point[0])).sort((a, b) => a[0] - b[0]);
-      if (chartPoints.length > 1) charts.push({ name: result.name, unit: result.unit, points: sparkPoints(chartPoints), min: roundValue(min[1]), minAt: Number(min[0]), max: roundValue(max[1]), maxAt: Number(max[0]), avg: roundValue(sum / points.length), first: roundValue(first[1]), last: roundValue(last[1]), firstAt: chartPoints[0][0], lastAt: chartPoints[chartPoints.length - 1][0] });
+      if (chartPoints.length > 1) charts.push({ name: result.name, fieldName: field.name, fieldDisplayName, frameRefId: schema.refId, unit: result.unit, points: sparkPoints(chartPoints), min: roundValue(min[1]), minAt: Number(min[0]), max: roundValue(max[1]), maxAt: Number(max[0]), avg: roundValue(sum / points.length), first: roundValue(first[1]), last: roundValue(last[1]), firstAt: chartPoints[0][0], lastAt: chartPoints[chartPoints.length - 1][0] });
     }
     return Object.assign(result, {
       min: roundValue(min[1]),
@@ -891,6 +897,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     if (!result) return { error: "Пустой ответ datasource" };
     limits = Object.assign({ rows: defaults.maxPanelRows, recent: defaults.recentPoints, series: defaults.maxSeriesPerQuery }, typeof limits === "number" ? { rows: limits } : limits || {});
     const frames = Array.isArray(result.frames) ? result.frames : [];
+    const allSchemas = charts ? frames.map((frame) => frame.schema || {}) : undefined;
     const firstMeta = frames[0] && frames[0].schema && frames[0].schema.meta;
     const summary = {
       status: result.status,
@@ -918,7 +925,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       fields.forEach((field, index) => {
         if (index === timeIndex) return;
         const localCharts = charts ? [] : undefined;
-        const item = summarizeSeries(field, schema, times, values[index] || [], limits.recent, localCharts);
+        const item = summarizeSeries(field, schema, times, values[index] || [], limits.recent, localCharts, allSchemas);
         series.push(item);
         if (localCharts && localCharts.length) seriesCharts.set(item, localCharts[0]);
       });
@@ -1119,13 +1126,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           results: Object.keys(results).map((refId) => {
             const queryCharts = series ? [] : undefined;
             const result = summarizeQueryResult(results[refId], limits, queryCharts);
-            if (queryCharts) series.push(...queryCharts.map((chart) => Object.assign({ refId }, chart)));
+            if (queryCharts) series.push(...queryCharts.map((chart) => Object.assign({ refId }, chart, { frameRefId: chart.frameRefId || refId })));
             return { refId, result };
           }),
         };
         // Ряды для мини-графиков идут отдельно от panelData и в модель не попадают. Здесь сохраняются все ряды:
         // какие из них показать, решается после сжатия контекста (chartsForContext + limitAnswerCharts).
-        if (series && series.length) options.charts.push({ panelId: panel.id, title: panel.title, type: panel.type, order: selected.indexOf(panel), series: series.map((chart) => Object.assign(chart, { displayUnit: chart.unit || panelUnit(panel, chart) })) });
+        if (series && series.length) options.charts.push({ panelId: panel.id, title: panel.title, type: panel.type, order: selected.indexOf(panel), series: series.map((chart) => Object.assign(chart, { displayUnit: panelUnit(panel, chart) })) });
         const skippedTargets = panelTargets(settings, panel).length - targets.length;
         if (skippedTargets > 0) item.note = `Выполнены первые ${targets.length} запросов панели, ещё ${skippedTargets} пропущено лимитом`;
         return item;

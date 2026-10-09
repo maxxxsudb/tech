@@ -124,6 +124,7 @@ function contextOf(body) {
     const choose = async name => {
       const option = options.find(option => option.text.includes(name));
       assert.ok(option, `Missing series selector option: ${name}`);
+      await page.waitForSelector(select, { visible: true });
       await page.select(select, option.value);
       return page.$eval('[data-testid="tech-ai-chart-card"]', node => node.textContent);
     };
@@ -205,6 +206,7 @@ function contextOf(body) {
     const limited = contextOf(requests[1]).panelData.flatMap(panel => panel.results.flatMap(query => query.result.series || []));
     assert.equal(limited.length, 1);
     await page.click('[data-testid="tech-ai-answer-charts"] summary');
+    await page.waitForSelector('[data-testid="tech-ai-chart-card"]', { visible: true });
     assert.equal(await page.$('[data-testid="tech-ai-chart-series-select"]'), null, 'Unsent series must not appear in the answer card');
     assert.equal(await page.$eval('[data-testid="tech-ai-chart-card"] .tech-ai-chart-series', node => node.textContent), limited[0].name);
     assert.ok(!errors.length, errors.join('\n'));

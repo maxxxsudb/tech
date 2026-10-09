@@ -10,12 +10,20 @@ let testStage = 'launch';
   });
   const page = await browser.newPage();
   const pageErrors = [];
+  const pendingRequests = new Map();
+  const failedRequests = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('requestfinished', (request) => pendingRequests.delete(request));
+  page.on('requestfailed', (request) => {
+    pendingRequests.delete(request);
+    failedRequests.push({ url: request.url(), type: request.resourceType(), error: request.failure()?.errorText });
+  });
   page.setDefaultNavigationTimeout(60000);
   await page.setCacheEnabled(false);
   await page.setViewport({ width: 1500, height: 900 });
   await page.setRequestInterception(true);
   page.on('request', (request) => {
+    pendingRequests.set(request, { url: request.url(), type: request.resourceType(), navigation: request.isNavigationRequest(), started: Date.now() });
     if (request.url().includes('/api/plugin-proxy/tech-ai-assistant-app/')) {
       request.respond({
         status: 200,
@@ -79,19 +87,30 @@ let testStage = 'launch';
     });
     const dialogs = [];
     page.on('dialog', (dialog) => { dialogs.push(dialog.type()); dialog.accept(); });
-    page.removeAllListeners('request');
-    await page.setRequestInterception(false);
     testStage = 'apply and reload';
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
-      page.click('[data-testid="tech-ai-apply-proposal"]'),
-    ]);
-    testStage = 'verify saved targets';
-    try { await page.waitForSelector('#tech-ai-assistant-launcher', { timeout: 60000 }); }
+    // History API changes also satisfy waitForNavigation, but do not reload the document.
+    let documentLoaded = false, reloadListener, reloadTimer;
+    const actualDocument = new Promise((resolve, reject) => {
+      reloadListener = () => { documentLoaded = true; clearTimeout(reloadTimer); resolve(); };
+      page.once('domcontentloaded', reloadListener);
+      reloadTimer = setTimeout(() => reject(new Error('Applied dashboard did not complete document reload within 60s')), 60000);
+    });
+    try {
+      await Promise.all([actualDocument, page.click('[data-testid="tech-ai-apply-proposal"]')]);
+      testStage = 'verify saved targets';
+      await page.waitForSelector('#tech-ai-assistant-launcher', { timeout: 60000 });
+    }
     catch (error) {
-      console.error('reload-state=' + JSON.stringify({ url: page.url(), errors: pageErrors, dialogs, state: await page.evaluate(() => ({ ready: document.readyState, title: document.title, headings: [...document.querySelectorAll('h1,h2')].map((node) => node.textContent) })) }));
+      console.error('reload-state=' + JSON.stringify({ url: page.url(), errors: pageErrors, dialogs,
+        documentLoaded,
+        pending: [...pendingRequests.values()].map(({ started, ...request }) => ({ ...request, ageMs: Date.now() - started })),
+        failed: failedRequests,
+        state: await page.evaluate(() => ({ ready: document.readyState, timeOrigin: performance.timeOrigin, title: document.title, headings: [...document.querySelectorAll('h1,h2')].map((node) => node.textContent) })) }));
       await page.screenshot({ path: '/test-results/apply-failure.png' });
       throw error;
+    } finally {
+      clearTimeout(reloadTimer);
+      page.off('domcontentloaded', reloadListener);
     }
     const targets = await page.evaluate(async () => {
       const response = await fetch('/crf/dashboard/api/dashboards/uid/tech-ai-apply-test');
