@@ -830,3 +830,60 @@ test("мини-графики скрыты, если из переданного
     assert.deepEqual(t.chartsForContext(charts, JSON.stringify(context)), []);
   }
 });
+
+test("мини-графики берут ряды после сжатия контекста: пик из 8 подов не теряется, блок не пропадает", async () => {
+  const original = global.fetch;
+  const pods = Array.from({ length: 8 }, (_, index) => `api-${index}`);
+  global.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    const results = {};
+    body.queries.forEach((query) => {
+      results[query.refId] = { status: 200, frames: pods.map((pod, podIndex) => rawSeries({ pod }, Array.from({ length: 30 }, (_, i) => podIndex === 6 && i === 20 ? 95 : 10 + podIndex))) };
+    });
+    return { ok: true, status: 200, text: async () => JSON.stringify({ results }) };
+  };
+  try {
+    const panels = [1, 2].map((id) => ({ id, title: `Поды ${id}`, type: "timeseries", datasource: { type: "prometheus", uid: "prom" }, targets: [{ refId: "A", expr: "sum by (pod) (rate(x[5m]))" }], fieldConfig: { defaults: { unit: "percent" } } }));
+    const charts = [];
+    const panelData = await t.loadPanelData(t.defaults, { timeRange: { from: "now-1h", to: "now" }, panels }, { charts });
+    assert.equal(charts.length, 2);
+    assert.equal(charts[0].series.length, 8, "в снимке остаются все ряды, отбор после сжатия");
+    const peakName = charts[0].series[6].name;
+    const full = t.limitAnswerCharts(t.chartsForContext(charts, JSON.stringify({ panelData })));
+    assert.equal(full[0].series.length, 3);
+    assert.equal(full[0].series[0].name, peakName, "без сжатия первым предлагается ряд с пиком");
+    const reduced = t.shrinkPanelData({ panelData }, { series: 3 });
+    const shown = t.limitAnswerCharts(t.chartsForContext(charts, JSON.stringify(reduced)));
+    assert.equal(shown.length, 2, "после сжатия «серии до 3» блок не пропадает");
+    assert.equal(shown[0].series[0].name, peakName);
+    assert.equal(shown[0].series[0].displayUnit, "percent", "единица берётся из настроек панели");
+    assert.equal(shown[0].series[0].unit, undefined, "подпись для сверки с контекстом не меняется");
+  } finally {
+    global.fetch = original;
+  }
+});
+
+test("единица мини-графика: override по имени ряда или refId важнее defaults", () => {
+  const panel = { fieldConfig: { defaults: { unit: "percent" }, overrides: [
+    { matcher: { id: "byName", options: "Memory" }, properties: [{ id: "unit", value: "bytes" }] },
+    { matcher: { id: "byFrameRefID", options: "B" }, properties: [{ id: "color", value: {} }, { id: "unit", value: "s" }] },
+  ] } };
+  assert.equal(t.panelUnit(panel, { name: "CPU", refId: "A" }), "percent");
+  assert.equal(t.panelUnit(panel, { name: "Memory", refId: "A" }), "bytes");
+  assert.equal(t.panelUnit(panel, { name: "Latency", refId: "B" }), "s");
+  assert.equal(t.panelUnit({}, { name: "x" }), undefined);
+});
+
+test("при переполнении sessionStorage история сохраняется без мини-графиков", () => {
+  const previous = global.sessionStorage;
+  const stored = {};
+  global.sessionStorage = { setItem(key, value) { if (value.includes('"charts"')) throw new Error("QuotaExceededError"); stored[key] = value; } };
+  try {
+    t.saveHistory("k", [{ role: "user", content: "вопрос" }, { role: "assistant", content: "ответ", charts: [{ panelId: 1, series: [] }], chartsTotal: 3 }]);
+    const saved = JSON.parse(stored.k);
+    assert.deepEqual(saved.map((item) => item.content), ["вопрос", "ответ"]);
+    assert.equal(saved[1].charts, undefined);
+  } finally {
+    if (previous === undefined) delete global.sessionStorage; else global.sessionStorage = previous;
+  }
+});
