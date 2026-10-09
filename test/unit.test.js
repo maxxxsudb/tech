@@ -630,3 +630,14 @@ test("ошибки API получают короткое понятное объ
   assert.equal(t.errorPresentation("HTTP 429 · quota exceeded").title, "Достигнут лимит API");
   assert.equal(t.errorPresentation("Запрос остановлен").title, "Запрос остановлен");
 });
+
+test("названия панелей в ответе становятся ссылками, код и ссылки не трогаются", () => {
+  const { linkPanelTitles } = loadModule();
+  const panels = [{ id: 2, title: "HTTP 5xx", type: "timeseries" }, { id: 3, title: "CPU", type: "stat" }, { id: 9, title: "Ряд", type: "row" }, { id: 4, title: "Дубль", type: "stat" }, { id: 5, title: "Дубль", type: "stat" }];
+  const html = linkPanelTitles('<p>Рост на HTTP 5xx и на панели 3, а CPUs и cpu не панели. Дубль, панель 77.</p><pre><code>HTTP 5xx</code></pre><a href="x">CPU</a>', panels);
+  assert.match(html, /<a href="#" class="tech-ai-panel-link" data-panel-id="2"[^>]*>HTTP 5xx<\/a> и на <a[^>]*data-panel-id="3"[^>]*>панели 3<\/a>/);
+  assert.ok(!/>CPUs</.test(html) && html.includes("а CPUs и cpu"));
+  assert.ok(html.includes("<code>HTTP 5xx</code>") && html.includes('<a href="x">CPU</a>'));
+  assert.ok(html.includes("Дубль, панель 77."), "неоднозначное название и неизвестный номер не связываются");
+  assert.equal(linkPanelTitles("<p>текст</p>", []), "<p>текст</p>");
+});

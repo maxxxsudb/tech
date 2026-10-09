@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.8.3";
+  const PLUGIN_VERSION = "0.8.4";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -151,6 +151,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     composer: { flex: "0 0 auto", display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, alignItems: "end", paddingTop: 8 },
     textarea: { width: "100%", minHeight: 64, maxHeight: 160, resize: "vertical", padding: "10px 12px", lineHeight: 1.4, color: "inherit", background: "rgba(128,128,128,.05)", border: "1px solid rgba(128,128,128,.4)", borderRadius: 8 },
     button: { minHeight: 34, padding: "0 14px", cursor: "pointer", borderRadius: 6, border: "1px solid rgba(128,128,128,.45)", background: "rgba(128,128,128,.16)", color: "inherit" },
+    quietButton: { minHeight: 24, padding: "0 6px", cursor: "pointer", borderRadius: 4, border: "1px solid transparent", background: "transparent", color: "inherit", fontSize: 12, opacity: 0.7 },
     smallButton: { minHeight: 28, padding: "0 10px", cursor: "pointer", borderRadius: 6, border: "1px solid rgba(128,128,128,.45)", background: "rgba(128,128,128,.16)", color: "inherit", fontSize: 12 },
     stopButton: { minHeight: 34, padding: "0 14px", cursor: "pointer", borderRadius: 6, border: "1px solid #e02f44", background: "transparent", color: "#e02f44" },
     quickActions: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 },
@@ -203,6 +204,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     ".tech-ai-root .tech-ai-progress-dot { width:7px; height:7px; border-radius:50%; background:#5794f2; flex-shrink:0; animation:tech-ai-pulse 1.4s ease-in-out infinite; }",
     "@keyframes tech-ai-pulse { 50% { opacity:.35; } } @media(prefers-reduced-motion:reduce) { .tech-ai-root .tech-ai-progress-dot { animation:none; } }",
     "@media(max-width:480px) { .tech-ai-root .tech-ai-period-chip { display:none; } }",
+    ".tech-ai-root .tech-ai-quiet:not(:disabled):hover { opacity:1; filter:none; border-color:transparent; background:rgba(128,128,128,.14); }",
+    ".tech-ai-answer a.tech-ai-panel-link { text-decoration:none; border-bottom:1px dashed currentColor; cursor:pointer; } .tech-ai-answer a.tech-ai-panel-link::before { content:'▦ '; font-size:.85em; opacity:.8; }",
+    ".tech-ai-panel-highlight { outline:3px solid #5794f2 !important; outline-offset:2px; border-radius:4px; animation:tech-ai-panel-flash 2.4s ease-out; }",
+    "@keyframes tech-ai-panel-flash { 0%,30% { box-shadow:0 0 0 8px rgba(87,148,242,.35); } 100% { box-shadow:0 0 0 0 rgba(87,148,242,0); } }",
   ].join("\n");
 
   function normalizePath(path) {
@@ -1855,10 +1860,90 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     );
   }
 
+  function escapeHtmlText(value) {
+    return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  // Названия панелей дашборда в ответе превращаются в ссылки: по клику дашборд прокручивается к панели.
+  // Работает по уже готовому HTML и не трогает код, ссылки и атрибуты тегов.
+  function linkPanelTitles(html, panels) {
+    const seen = new Map();
+    (panels || []).forEach((panel) => {
+      const title = String(panel && panel.title || "").trim();
+      const id = Number(panel && panel.id);
+      if (!panel || panel.type === "row" || !Number.isFinite(id) || title.length < 3) return;
+      const key = escapeHtmlText(title);
+      seen.set(key, seen.has(key) && seen.get(key) !== id ? null : id);
+    });
+    const ids = new Set((panels || []).filter((panel) => panel && panel.type !== "row").map((panel) => Number(panel.id)).filter(Number.isFinite));
+    const titles = Array.from(seen.keys()).filter((key) => seen.get(key) !== null).sort((a, b) => b.length - a.length);
+    if (!titles.length && !ids.size) return html;
+    const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const alternatives = titles.map(escapeRe).concat(["[Пп]анел[а-яё]{0,3}\\s+(?:#|№\\s*|[Ii][Dd]\\s*)?\\d+"]);
+    const pattern = new RegExp(`(?<![\\p{L}\\p{N}_])(?:${alternatives.join("|")})(?![\\p{L}\\p{N}_])`, "gu");
+    const link = (id, text) => `<a href="#" class="tech-ai-panel-link" data-panel-id="${id}" title="Показать панель на дашборде">${text}</a>`;
+    let skip = 0;
+    return String(html).split(/(<[^>]*>)/).map((part) => {
+      if (part.startsWith("<")) {
+        const tag = /^<(\/?)(a|code|pre)\b/i.exec(part);
+        if (tag && !/\/>$/.test(part)) skip = Math.max(0, skip + (tag[1] ? -1 : 1));
+        return part;
+      }
+      if (skip || !part) return part;
+      return part.replace(pattern, (match) => {
+        const byTitle = seen.get(match);
+        if (byTitle) return link(byTitle, match);
+        const number = /(\d+)$/.exec(match);
+        return number && /^[Пп]анел/.test(match) && ids.has(Number(number[1])) ? link(Number(number[1]), match) : match;
+      });
+    }).join("");
+  }
+
+  function findPanelElement(id, title) {
+    const outside = (element) => element && !element.closest("#tech-ai-assistant-drawer") ? element : null;
+    const selectors = [`[data-viz-panel-key="panel-${id}"]`, `[data-panelid="${id}"]`, `#panel-${id}`, `[data-griditem-key="grid-item-${id}"]`];
+    for (const selector of selectors) {
+      const element = outside(document.querySelector(selector));
+      if (element) return element.closest(".react-grid-item") || element;
+    }
+    if (title) {
+      const header = Array.from(document.querySelectorAll('[data-testid^="data-testid Panel header"]')).find((node) => outside(node) && node.getAttribute("data-testid") === `data-testid Panel header ${title}`);
+      if (header) return header.closest(".react-grid-item") || header.closest("section") || header;
+    }
+    return null;
+  }
+
+  function focusPanel(id, title) {
+    const drawer = document.getElementById("tech-ai-assistant-drawer");
+    if (drawer && drawer.style.width === "100vw") {
+      const expand = drawer.querySelector('[data-testid="tech-ai-expand"]');
+      if (expand) expand.click();
+    }
+    const element = findPanelElement(id, title);
+    if (!element) {
+      const major = Number(String(grafanaRuntime.config.buildInfo && grafanaRuntime.config.buildInfo.version || "").split(".")[0]);
+      if (grafanaRuntime.locationService) grafanaRuntime.locationService.partial({ viewPanel: major >= 11 ? `panel-${id}` : String(id) });
+      return false;
+    }
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+    element.classList.remove("tech-ai-panel-highlight");
+    void element.offsetWidth;
+    element.classList.add("tech-ai-panel-highlight");
+    setTimeout(() => element.classList.remove("tech-ai-panel-highlight"), 2600);
+    return true;
+  }
+
   function MessageContent(props) {
-    return h("div", { style: styles.markdown, className: "tech-ai-answer", "data-testid": "tech-ai-answer" },
+    const panels = availablePanels(props.context);
+    const onClick = (event) => {
+      const target = event.target && event.target.closest ? event.target.closest(".tech-ai-panel-link") : null;
+      if (!target) return;
+      event.preventDefault();
+      focusPanel(Number(target.getAttribute("data-panel-id")), (panels.find((panel) => Number(panel.id) === Number(target.getAttribute("data-panel-id"))) || {}).title);
+    };
+    return h("div", { style: styles.markdown, className: "tech-ai-answer", "data-testid": "tech-ai-answer", onClick },
       splitContent(props.content).map((part, index) => {
-        if (part.type === "text") return h("div", { key: index, className: "markdown-html", dangerouslySetInnerHTML: { __html: markdownHtml(part.text) } });
+        if (part.type === "text") return h("div", { key: index, className: "markdown-html", dangerouslySetInnerHTML: { __html: linkPanelTitles(markdownHtml(part.text), panels) } });
         if (part.lang === "dashboard-json" || part.lang === "grafana-query") return null;
         return h(CodeBlock, { key: index, lang: part.lang, code: part.code, context: props.context });
       })
@@ -2524,15 +2609,16 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     function messageView(message, index, isPending) {
       if (message.role === "user") {
         const actionLabel = (quickPrompts.find((action) => action.prompt === message.content) || {}).label;
-        return h("div", { key: index, style: Object.assign({}, styles.user, message.failed ? { opacity: 0.6 } : null) },
+        return h("div", { key: index, style: { alignSelf: "flex-end", flexShrink: 0, minWidth: 0, maxWidth: "88%", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }, "data-testid": "tech-ai-user-turn" },
+          h("div", { style: Object.assign({}, styles.user, { maxWidth: "100%" }, message.failed ? { opacity: 0.6 } : null) },
           (actionLabel || message.content) + (message.failed ? "\nБез ответа — не отправляется в историю модели" : ""),
           actionLabel || message.note || (message.attachments || []).length ? h("details", { style: { fontSize: 12, marginTop: 8, opacity: .85 } },
             h("summary", { style: { cursor: "pointer" } }, actionLabel ? "Вопрос и контекст" : "Контекст отправки"),
             actionLabel ? h("div", { style: { marginTop: 6 } }, message.content) : null,
             message.note ? h("div", { style: { marginTop: 6 } }, message.note.trim()) : null,
             (message.attachments || []).length ? h("div", null, message.attachments.map((item) => `${item.name} · ${Math.ceil(item.bytes / 1024)} КБ`).join("; ")) : null
-          ) : null,
-          h("button", { type: "button", style: Object.assign({}, styles.smallButton, { marginTop: 6 }), disabled: busy, onClick: () => editMessage(index), "data-testid": "tech-ai-edit-message" }, "Изменить вопрос")
+          ) : null),
+          h("button", { type: "button", className: "tech-ai-quiet", style: styles.quietButton, disabled: busy, onClick: () => editMessage(index), "data-testid": "tech-ai-edit-message" }, "Изменить вопрос")
         );
       }
       const content = isPending && !message.content && !(message.steps || []).length && !message.reasoning ? "…" : message.content;
@@ -2541,10 +2627,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           message.reasoning ? h("details", { style: styles.context }, h("summary", { style: { cursor: "pointer" } }, isPending && !message.content ? "Размышляет…" : "Размышления модели"), h("div", { style: { whiteSpace: "pre-wrap" } }, message.reasoning)) : null,
           (message.steps || []).map((step, stepIndex) => h(StepView, { key: `step-${stepIndex}`, step, context })),
           h(MessageContent, { content: isPending ? stripPendingQueries(content) : content, context }),
-          !isPending && content ? h("div", { style: Object.assign({}, styles.quickActions, { marginTop: 8, marginBottom: 0 }) },
-            h("button", { type: "button", style: styles.smallButton, onClick: () => copyText(content) }, "Копировать ответ"),
-            !message.local ? h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: () => regenerate(index), "data-testid": "tech-ai-regenerate" }, "Перегенерировать") : null,
-            !message.local ? h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: () => prepareSend("Продолжи предыдущий ответ с места остановки, без повторения уже написанного.", { dataMode: "structure", baseHistory: history.slice(0, index + 1) }), "data-testid": "tech-ai-continue" }, "Продолжить") : null
+          !isPending && content ? h("div", { style: Object.assign({}, styles.quickActions, { marginTop: 6, marginBottom: -4, marginLeft: -6, gap: 2 }), "data-testid": "tech-ai-answer-actions" },
+            h("button", { type: "button", className: "tech-ai-quiet", style: styles.quietButton, onClick: () => copyText(content) }, "Копировать"),
+            !message.local ? h("button", { type: "button", className: "tech-ai-quiet", style: styles.quietButton, disabled: busy, onClick: () => regenerate(index), "data-testid": "tech-ai-regenerate" }, "Перегенерировать") : null,
+            !message.local ? h("button", { type: "button", className: "tech-ai-quiet", style: styles.quietButton, disabled: busy, onClick: () => prepareSend("Продолжи предыдущий ответ с места остановки, без повторения уже написанного.", { dataMode: "structure", baseHistory: history.slice(0, index + 1) }), "data-testid": "tech-ai-continue" }, "Продолжить") : null
           ) : null
         ),
         !isPending ? proposalCard(message, index) : null
@@ -2591,7 +2677,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         history.length || busy ? h("button", { type: "button", style: styles.smallButton, onClick: newDialog }, "Новый диалог") : null
       ),
       context ? h("div", { style: styles.contextStrip, "data-testid": "tech-ai-context-strip" },
-        h("button", { type: "button", style: Object.assign({}, styles.chip, { flex: "1 1 auto", textAlign: "left", cursor: "pointer" }), onClick: () => setTab("context"), title: `${compactContext.scope} · ${compactContext.period} · ${compactContext.mode}. Изменить контекст` }, compactContext.scope),
+        h("button", { type: "button", style: Object.assign({}, styles.chip, { flex: "0 1 auto", textAlign: "left", cursor: "pointer" }), onClick: () => setTab("context"), "data-testid": "tech-ai-scope-chip", title: `${compactContext.scope} · ${compactContext.period} · ${compactContext.mode}. Изменить контекст` }, `${compactContext.scope} ▾`),
         h("span", { style: Object.assign({}, styles.chip, { maxWidth: "35%" }), className: "tech-ai-period-chip", title: compactContext.period }, compactContext.period),
         h("span", { style: Object.assign({}, styles.chip, { flexShrink: 0 }), title: "Состав текущего контекста" }, compactContext.mode)
       ) : null,
@@ -3349,6 +3435,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   return {
     plugin,
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
-    __test: { fallbackMarkdown, markdownHtml, contextSummary, errorPresentation, presentationCss, loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
+    __test: { fallbackMarkdown, markdownHtml, linkPanelTitles, findPanelElement, contextSummary, errorPresentation, presentationCss, loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
   };
 });
