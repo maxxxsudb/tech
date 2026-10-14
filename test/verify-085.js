@@ -93,7 +93,7 @@ function contextOf(body) {
       await page.goto(dashboard, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('#tech-ai-assistant-launcher');
       await page.click('#tech-ai-assistant-launcher');
-      await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+      await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     };
     stage = 'collect sample and render answer';
     await openAssistant();
@@ -102,7 +102,7 @@ function contextOf(body) {
     await page.select('[data-testid="tech-ai-data-mode"]', 'sample');
     await page.$eval('[data-testid="tech-ai-send-preview"] button', node => node.click());
     await page.waitForSelector('[data-testid="tech-ai-answer-charts"]');
-    await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     assert.equal(requests.length, 1);
     const context = contextOf(requests[0]);
     const sentSeries = context.panelData.flatMap(panel => panel.results.flatMap(query => query.result.series || []));
@@ -201,7 +201,7 @@ function contextOf(body) {
     await page.select('[data-testid="tech-ai-data-mode"]', 'sample');
     await page.$eval('[data-testid="tech-ai-send-preview"] button', node => node.click());
     await page.waitForSelector('[data-testid="tech-ai-answer-charts"]');
-    await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     assert.equal(requests.length, 2);
     const limited = contextOf(requests[1]).panelData.flatMap(panel => panel.results.flatMap(query => query.result.series || []));
     assert.equal(limited.length, 1);

@@ -37,7 +37,7 @@ const assert = require('node:assert/strict');
     await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/d/tech/tech-stand?from=now-1h&to=now', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#tech-ai-assistant-launcher');
     await page.click('#tech-ai-assistant-launcher');
-    await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     const click = text => page.evaluate(text => {
       const button = [...document.querySelectorAll('#tech-ai-assistant-drawer button')].find(node => node.textContent.trim() === text);
       if (!button) throw new Error('No button ' + text);

@@ -28,7 +28,7 @@ const answer = '## Краткий вывод\n\nДашборд помогает 
     const dashboard = 'http://tech-ai-grafana-test:3000/crf/dashboard/d/tech/tech-stand?from=now-1h&to=now';
     await page.goto(dashboard, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#tech-ai-assistant-launcher'); await page.click('#tech-ai-assistant-launcher');
-    await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     assert.equal(await page.$$eval('[data-testid="tech-ai-welcome"] button', nodes => nodes.length), 4);
     assert.equal(await page.$eval('[data-testid="tech-ai-history"]', node => node.scrollTop), 0);
     assert.ok((await page.$eval('[data-testid="tech-ai-context-strip"]', node => node.textContent)).includes('Последний час'));
@@ -47,7 +47,7 @@ const answer = '## Краткий вывод\n\nДашборд помогает 
     assert.ok(pendingRequest);
     await pendingRequest.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: answer } }] }) });
     await page.waitForSelector('[data-testid="tech-ai-answer"] table');
-    await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     assert.equal(await page.$('[data-testid="tech-ai-request-status"]'), null);
     assert.ok(await page.$('[data-testid="tech-ai-answer"] h2'));
     assert.ok(await page.$('[data-testid="tech-ai-answer"] li'));

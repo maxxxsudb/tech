@@ -36,7 +36,7 @@ const assert = require('node:assert/strict');
       if (!node) throw new Error('Button: ' + text);
       node.click();
     }, text);
-    const open = async () => { await page.click('#tech-ai-assistant-launcher'); await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])'); };
+    const open = async () => { await page.click('#tech-ai-assistant-launcher'); await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])'); };
     const attach = async () => {
       await page.evaluate(async () => {
         const canvas = document.createElement('canvas'); canvas.width = canvas.height = 16;
@@ -60,7 +60,7 @@ const assert = require('node:assert/strict');
     await open(); await attach();
     await page.click('[data-testid="tech-ai-attachment-as-text"]');
     await send();
-    await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     assert.equal(requests.length, 3);
     assert.equal(requests[1].max_tokens, 2048);
     assert.ok(JSON.stringify(requests[2]).includes('IMAGE_TRANSCRIPT_082'));

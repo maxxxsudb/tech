@@ -28,7 +28,7 @@ const root = 'http://tech-ai-grafana-test:3000/crf/dashboard';
     await page.evaluate(async () => { const response = await fetch('/crf/dashboard/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user: 'admin', password: 'admin' }) }); if (!response.ok) throw new Error('Login failed'); });
     settings = await page.evaluate(async () => (await fetch('/crf/dashboard/api/plugins/tech-ai-assistant-app/settings')).json());
     await page.goto(`${root}/a/tech-ai-assistant-app?dashboardUid=tech&from=now-1h&to=now`, { waitUntil: 'networkidle2' });
-    await page.waitForSelector('[data-testid="tech-ai-composer"] textarea:not([disabled])');
+    await page.waitForSelector('.tech-ai-root[data-busy="false"] [data-testid="tech-ai-composer"] textarea:not([disabled])');
     await page.select('[data-testid="tech-ai-composer-data-mode"]', 'investigation');
     await page.type('[data-testid="tech-ai-composer"] textarea', 'Проверь метаданные Loki');
     await page.evaluate(() => [...document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Отправить').click());

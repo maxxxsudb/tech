@@ -32,7 +32,7 @@ const puppeteer = require('puppeteer');
     await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/d/tech/tech-stand?orgId=1&from=now-24h&to=now', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true, timeout: 30000 });
     await page.click('#tech-ai-assistant-launcher');
-    await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
+    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])', { visible: true, timeout: 30000 });
   await page.$eval('[data-testid="tech-ai-actions-panel"]', (node) => { node.open = true; });
     await page.evaluate(() => {
       const drawer = document.querySelector('#tech-ai-assistant-drawer');
@@ -45,7 +45,7 @@ const puppeteer = require('puppeteer');
     });
     await page.waitForFunction(() => {
       const drawer = document.querySelector('#tech-ai-assistant-drawer');
-      return !drawer.querySelector('textarea').disabled && !drawer.innerText.endsWith('…');
+      return drawer.querySelector('.tech-ai-root').dataset.busy === 'false' && !drawer.querySelector('textarea').disabled && !drawer.innerText.endsWith('…');
     }, { timeout: 120000 });
     const text = await page.$eval('#tech-ai-assistant-drawer', (node) => node.innerText);
     await page.screenshot({ path: '/test/investigation-success.png', fullPage: false });

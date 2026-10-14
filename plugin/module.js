@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.9.1";
+  const PLUGIN_VERSION = "0.9.2";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -196,9 +196,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     ".tech-ai-root .tech-ai-form-grid > * { min-width:0; } .tech-ai-root .tech-ai-wide { grid-column:1/-1; } .tech-ai-root .tech-ai-composer-card:focus-within { border-color:#5794f2; } .tech-ai-root .tech-ai-save-bar { position:sticky; bottom:0; z-index:2; display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:12px 0; border-top:1px solid rgba(128,128,128,.25); background:var(--tech-ai-background,#111217); } .tech-ai-root .tech-ai-send-note { color:var(--text-secondary,#999); font-size:11px; line-height:1.5; overflow-wrap:anywhere; }",
     ".tech-ai-root button,.tech-ai-root input,.tech-ai-root textarea,.tech-ai-root select { font-family:inherit; }",
     ".tech-ai-root button { transition:background .12s,border-color .12s; }",
+    ".tech-ai-root .tech-ai-context-changed { border-color:#5794f2!important; box-shadow:0 0 0 1px rgba(87,148,242,.25); } .tech-ai-root .tech-ai-context-changed.tech-ai-context-recent { animation:tech-ai-context-pulse 2s ease-out; } @keyframes tech-ai-context-pulse { from { background:rgba(87,148,242,.3); } to { background:transparent; } } @media(prefers-reduced-motion:reduce) { .tech-ai-root .tech-ai-context-recent { animation:none!important; } }",
     ".tech-ai-root button[aria-pressed=true] { border-color:#5794f2; background:rgba(87,148,242,.14); }",
     ".tech-ai-root .tech-ai-composer-card:focus-within { box-shadow:0 0 0 1px #5794f2; } .tech-ai-root .tech-ai-composer-card textarea:focus-visible { outline:none; }",
     ".tech-ai-root .tech-ai-composer-submit { display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:0 12px; font-size:12px; } @container(max-width:420px) { .tech-ai-root .tech-ai-composer-submit { width:36px; min-width:36px; padding:0; font-size:0; } .tech-ai-root .tech-ai-composer-submit::after { content:'↑'; font-size:19px; line-height:1; } .tech-ai-root .tech-ai-composer-submit.tech-ai-stop::after { content:'■'; font-size:13px; } }",
+    ".tech-ai-root .tech-ai-screen-shot { white-space:nowrap; flex:0 0 auto; } .tech-ai-root .tech-ai-screen-shot svg { display:none; } @container(max-width:420px) { .tech-ai-root .tech-ai-screen-shot { width:32px; padding:0 6px; } .tech-ai-root .tech-ai-screen-shot svg { display:block; width:18px; height:16px; } .tech-ai-root .tech-ai-screen-label { display:none; } }",
     ".tech-ai-root button:not(:disabled):hover { filter:brightness(1.12); border-color:#5794f2; }",
     ".tech-ai-root button:disabled { opacity:.45; cursor:not-allowed; }",
     ".tech-ai-root button:focus-visible,.tech-ai-root textarea:focus-visible,.tech-ai-root summary:focus-visible { outline:2px solid #5794f2; outline-offset:2px; }",
@@ -2190,9 +2192,61 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const scope = selected.length === 1 ? `Панель: ${selected[0].title || "Без названия"}` : `Панели: ${selected.length}`;
     const range = context && context.timeRange || {}, from = range.from, to = range.to;
     const known = { "now-1h": "Последний час", "now-6h": "Последние 6 часов", "now-24h": "Последние 24 часа", "now-7d": "Последние 7 дней" };
-    const period = snapshot && snapshot.range ? `${new Date(snapshot.range.from).toLocaleString()} — ${new Date(snapshot.range.to).toLocaleString()}` : to === "now" && known[from] ? known[from] : from && to ? `${from} — ${to}` : "Диапазон дашборда";
-    const mode = preview ? ({ structure: "Только структура", snapshot: "Готовый снимок", sample: "Короткий пример", investigation: "Расследование" }[preview.dataMode] || "По настройкам") : snapshot && snapshot.stats && snapshot.stats.loaded ? `Данные: ${snapshot.stats.loaded}/${snapshot.stats.total}` : "Без данных";
+    const period = snapshot && snapshot.range ? contextRangeLabel(snapshot.range, range.timezone) : to === "now" && known[from] ? known[from] : from != null && to != null ? contextRangeLabel(range) : "Диапазон дашборда";
+    const mode = preview ? ({ structure: "Без данных", snapshot: "Полученные данные", sample: "Короткий пример", investigation: "Расследование" }[preview.dataMode] || "По настройкам") : snapshot && snapshot.stats && snapshot.stats.loaded ? `Данные: ${snapshot.stats.loaded}/${snapshot.stats.total}` : "Без данных";
     return { scope, period, mode };
+  }
+
+  function contextDescriptor(context, selectedIds) {
+    const ids = new Set((selectedIds || []).map(Number));
+    return { dashboard: context && (context.dashboardUid || context.dashboardTitle), panels: availablePanels(context).filter(panel => ids.has(Number(panel.id))).map(panel => ({ id: Number(panel.id), title: panel.title || `#${panel.id}` })).sort((a, b) => a.id - b.id), timeRange: Object.assign({}, context && context.timeRange), variables: sanitizeForAI(Object.fromEntries(Object.entries(context && context.variables || {}).sort(([a], [b]) => a.localeCompare(b)))) };
+  }
+
+  function contextRangeLabel(range, timezone) {
+    range = range || {};
+    const bound = value => {
+      if (value == null || value === "") return "не задан";
+      const absolute = typeof value === "number" ? value : /^\d{13}$/.test(String(value)) ? Number(value) : /^\d{4}-\d{2}-\d{2}/.test(String(value)) ? Date.parse(value) : NaN;
+      if (!Number.isFinite(absolute)) return String(value);
+      const zone = String(timezone || range.timezone || "browser");
+      try { return new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short", timeZone: zone.toLowerCase() === "utc" ? "UTC" : zone === "browser" ? undefined : zone }).format(new Date(absolute)); }
+      catch (_) { return new Date(absolute).toLocaleString(); }
+    };
+    return `${bound(range.from)} — ${bound(range.to)}`;
+  }
+
+  function contextDifference(before, after) {
+    if (!before || !after) return [];
+    return ["panels", "timeRange", "variables"].filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+  }
+
+  function sentContextDetails(context, actual, snapshot, reductions) {
+    const sent = actual.panelData || [], raw = snapshot && snapshot.panelData || [];
+    const ids = new Set(sent.map(item => Number(item.panelId)));
+    const issues = [];
+    const actualPanels = availablePanels(actual);
+    const structureIds = new Set(actualPanels.map(panel => Number(panel.id)));
+    availablePanels(context).filter(panel => !structureIds.has(Number(panel.id)) && !raw.some(item => Number(item.panelId) === Number(panel.id))).forEach(panel => issues.push({ panelId: panel.id, title: panel.title, reason: "Панель не передана: ограничение окна контекста модели" }));
+    raw.forEach(item => {
+      const errors = (item.results || []).filter(query => query.result && query.result.error).map(query => `${query.refId}: ${query.result.error}`);
+      const reason = item.skipped || item.error || errors.join("; ") || (!ids.has(Number(item.panelId)) ? "Не передано: ограничение окна контекста модели" : undefined);
+      if (reason) issues.push({ panelId: item.panelId, title: item.title, reason });
+      if (item.note) issues.push({ panelId: item.panelId, title: item.title, reason: item.note });
+      if (!reason && (item.results || []).length && item.results.every(query => query.result && query.result.empty)) issues.push({ panelId: item.panelId, title: item.title, reason: "Запрос выполнен, за период данных не найдено" });
+    });
+    const data = panelDataStats(sent);
+    data.total = raw.length || sent.length;
+    const failed = sent.filter(item => !item.error && !item.skipped && (item.results || []).length && item.results.every(query => query.result && query.result.error)).length;
+    data.loaded -= failed; data.errors += failed;
+    data.omitted = Math.max(0, data.total - sent.length);
+    return { data, scope: contextDescriptor(Object.assign({}, context, { panel: undefined, panels: actualPanels }), actualPanels.map(panel => panel.id)), range: snapshot && snapshot.range ? { from: snapshot.range.from, to: snapshot.range.to } : Object.assign({}, context.timeRange), snapshotAt: snapshot && snapshot.at, issues, reductions: (reductions || []).slice() };
+  }
+
+  function sentContextCaption(info, fileCount) {
+    if (!info) return "Контекст отправки";
+    const data = info.data || {};
+    const missing = (data.skipped || 0) + (data.omitted || 0);
+    return (data.total ? `Данные ${data.loaded}/${data.total}` : "Без данных") + (missing ? ` · ${missing} пропущено` : "") + (data.errors ? ` · ошибок ${data.errors}` : "") + (!missing && !data.errors && ((info.issues || []).length || (info.reductions || []).length) ? " · ограничения" : "") + (info.screenshot ? " · Снимок экрана" : "") + (fileCount ? ` · файлов ${fileCount}` : "");
   }
 
   function splitContent(content) {
@@ -2727,6 +2781,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const [captureMode, setCaptureMode] = React.useState("tab");
     const [annotationDraft, setAnnotationDraft] = React.useState();
     const [annotationStatus, setAnnotationStatus] = React.useState("");
+    const [contextNotice, setContextNotice] = React.useState();
+    const [contextPopover, setContextPopover] = React.useState(false);
+    const [panelChoice, setPanelChoice] = React.useState();
+    const [contextRevision, setContextRevision] = React.useState(0);
     const snapshotRef = React.useRef(undefined);
     const historyRef = React.useRef(null);
     const rootRef = React.useRef(null);
@@ -2741,6 +2799,51 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const requestStarted = React.useRef(0);
     const composerSize = React.useRef({ height: 42 });
     const eventsRef = React.useRef();
+    const contextBaseline = React.useRef();
+    const contextPopupRef = React.useRef();
+
+    const liveContext = context ? withPageState(context) : undefined;
+    const liveDescriptor = liveContext ? contextDescriptor(liveContext, selectedPanelIds) : undefined;
+    const liveKey = JSON.stringify(liveDescriptor);
+    React.useEffect(() => {
+      if (!liveDescriptor || !storageKey) return;
+      const previous = contextBaseline.current;
+      const changes = contextDifference(previous, liveDescriptor);
+      contextBaseline.current = liveDescriptor;
+      if (changes.length) {
+        setContextNotice({ before: previous, after: liveDescriptor, changes, recent: true });
+        setSendPreview(undefined);
+      }
+    }, [liveKey, storageKey]);
+    React.useEffect(() => {
+      if (!contextNotice || !contextNotice.recent) return;
+      const timer = setTimeout(() => setContextNotice(value => value ? Object.assign({}, value, { recent: false }) : value), 2200);
+      return () => clearTimeout(timer);
+    }, [contextNotice]);
+    React.useEffect(() => {
+      if (!context) return;
+      let key = liveKey;
+      const refresh = () => {
+        const next = JSON.stringify(contextDescriptor(withPageState(context), selectedPanelIds));
+        if (next !== key) { key = next; setContextRevision(value => value + 1); }
+      };
+      const history = grafanaRuntime.locationService && grafanaRuntime.locationService.getHistory && grafanaRuntime.locationService.getHistory();
+      const unlisten = history && history.listen ? history.listen(refresh) : undefined;
+      const timer = setInterval(refresh, 1000);
+      return () => { clearInterval(timer); if (typeof unlisten === "function") unlisten(); };
+    }, [context, JSON.stringify(selectedPanelIds)]);
+    React.useEffect(() => {
+      if (!panelChoice || panelChoice.selected == null || busy || selectedPanelIds.length !== 1 || selectedPanelIds[0] !== panelChoice.selected) return;
+      const chosen = panelChoice;
+      setPanelChoice(undefined); setContextPopover(false);
+      prepareSend(chosen.prompt, chosen.action);
+    }, [panelChoice, JSON.stringify(selectedPanelIds), busy]);
+    React.useEffect(() => {
+      if (!contextPopover || !contextPopupRef.current) return;
+      const input = contextPopupRef.current.querySelector("input");
+      if (input) input.focus();
+      return () => { const button = rootRef.current && rootRef.current.querySelector('[data-testid="tech-ai-scope-chip"]'); if (button) button.focus(); };
+    }, [contextPopover]);
 
     React.useEffect(() => {
       let cancelled = false;
@@ -2857,6 +2960,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       if (!enabled) setRetry((current) => current ? Object.assign({}, current, { action: Object.assign({}, current.action, { capturedScreenshot: undefined, screenshotContextKey: undefined }) }) : current);
     }
 
+    function requestPanel(prompt, action) {
+      setError(""); setTab("chat"); setPanelFilter(""); setSendPreview(undefined);
+      setPanelChoice({ prompt, action }); setContextPopover(true);
+    }
+
     function prepareSend(promptOverride, action) {
       const prompt = String(promptOverride || input).trim();
       if (!prompt || busy || readingFiles || !settings || !context) return;
@@ -2866,16 +2974,15 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         action.attachmentText = editTurn.message.attachmentText;
         action.attachmentSummaries = (editTurn.message.attachments || []).filter((item) => item.kind === "text");
       }
-      if (action && action.needsPanel && !context.panel && selectedPanelIds.length !== 1) {
-        setTab("chat");
-        setError(`«${action.label}» работает с одной панелью. На вкладке «Контекст» нажмите «Только эта» у нужной панели.`);
+      if (action && action.needsPanel && selectedPanelIds.length !== 1) {
+        requestPanel(prompt, action);
         return;
       }
       const selectedContext = selectContextPanels(withPageState(context), selectedPanelIds);
       const dataPlan = effectiveDataPlan(action, selectedContext);
       const previous = snapshotRef.current;
       const snapshotOnly = action.dataMode === "snapshot";
-      if (snapshotOnly && !reusableSnapshot(selectedContext)) { setError("Снимок данных отсутствует или устарел. Выберите «Получить пример» либо «Только структура»."); return; }
+      if (snapshotOnly && !reusableSnapshot(selectedContext)) { setError("Полученные данные отсутствуют или устарели. Выберите «Короткий пример» либо «Без данных»."); return; }
       const reusesSnapshot = snapshotOnly || Boolean(dataPlan && previous && !previous.stale && previous.key === snapshotKey(selectedContext, selectedPanelIds, settings, dataPlan));
       const fetchesData = Boolean(dataPlan && !reusesSnapshot);
       const screenshotOn = includeScreenshot && settings.screenshotEnabled !== false;
@@ -2934,7 +3041,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       if (mode === "investigation") openInvestigation(action);
       else {
         const selectedContext = selectContextPanels(withPageState(context), selectedPanelIds);
-        if (mode === "snapshot" && !reusableSnapshot(selectedContext)) { setError("Снимок данных отсутствует или устарел. Выберите «Получить пример» либо «Только структура»."); return; }
+        if (mode === "snapshot" && !reusableSnapshot(selectedContext)) { setError("Полученные данные отсутствуют или устарели. Выберите «Короткий пример» либо «Без данных»."); return; }
         const dataPlan = effectiveDataPlan(action, selectedContext);
         const previous = snapshotRef.current;
         const reused = mode === "snapshot" || Boolean(dataPlan && previous && !previous.stale && previous.key === snapshotKey(selectedContext, selectedPanelIds, settings, dataPlan));
@@ -3074,9 +3181,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       let requestFiles = attachmentTools.applyImageToTextPolicy(action.requestFiles || attachments, settings);
       const baseHistory = action.baseHistory || (editTurn ? editTurn.history : history);
       let modelPrompt = requestPrompt(prompt, action, requestFiles);
-      if (action && action.needsPanel && !context.panel && selectedPanelIds.length !== 1) {
-        setTab("chat");
-        setError(`«${action.label}» работает с одной панелью. На вкладке «Контекст» нажмите «Только эта» у нужной панели.`);
+      if (action && action.needsPanel && selectedPanelIds.length !== 1) {
+        requestPanel(prompt, action);
         return;
       }
       const controller = new AbortController();
@@ -3084,6 +3190,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       const isCurrent = () => generation === requestGeneration.current;
       abortRef.current = controller;
       setBusy(true);
+      if (input.trim() === prompt) { setInput(""); resetComposerHeight(); }
       jumpToLatest();
       setSendPreview(undefined);
       setTab("chat");
@@ -3149,7 +3256,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         if (dataPlan && selectedContext.isExplore && !action.timeRange && new Set(availablePanels(selectedContext).map(panel => JSON.stringify(panel.timeRange))).size > 1) throw new Error("У вкладок Explore разные периоды. На вкладке «Контекст» выберите одну для получения данных.");
         const key = dataPlan ? snapshotKey(selectedContext, selectedPanelIds, settings, dataPlan) : undefined;
         let snapshot = action.dataMode === "snapshot" ? reusableSnapshot(selectedContext) : key && snapshotRef.current && !snapshotRef.current.stale && snapshotRef.current.key === key ? snapshotRef.current : undefined;
-        if (action.dataMode === "snapshot" && !snapshot) throw new Error("Снимок данных отсутствует или устарел. Выберите «Получить пример» либо «Только структура».");
+        if (action.dataMode === "snapshot" && !snapshot) throw new Error("Полученные данные отсутствуют или устарели. Выберите «Короткий пример» либо «Без данных».");
         if (dataPlan && !snapshot) {
           setRequestStage("Получаем данные панелей");
           const range = limitedRange(selectedContext, dataPlan.rangeHours);
@@ -3196,10 +3303,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         if (snapshot && plan.windowTokens && plan.totalTokens + (Number(settings.maxTokens) || 1024) > plan.windowTokens) plan = planRequest(settings, requestContext, apiHistory(baseHistory), modelPrompt, { schema: action.schema === true });
         if (plan.windowTokens && plan.totalTokens + (Number(settings.maxTokens) || 1024) > plan.windowTokens) throw new Error("Вопрос и вложения не помещаются в настроенное окно контекста. Уменьшите файлы или увеличьте Context tokens в Configuration.");
         if (snapshot && !events && !(screenshot && screenshot.coverage)) snapshot.fitted = plan.fitted;
-        setInput("");
         const imageFiles = requestFiles.filter((item) => item.kind === "image").concat(screenshot ? [Object.assign({ name: "dashboard.jpg", kind: "image" }, screenshot)] : []);
         userMessage = { role: "user", content: prompt, modelContent: modelPrompt, attachmentText: redactString([action.attachmentText, attachmentTools.composeText(requestFiles)].filter(Boolean).join("\n\n")), attachments: (action.attachmentSummaries || []).concat(attachmentTools.summaries(imageFiles.concat(requestFiles.filter((item) => item.kind === "text")))), action: { dataMode: action.dataMode, dataPlan, queries: action.queries, schema: action.schema, timeRange: action.timeRange, includeAnnotations: action.includeAnnotations, includeVersions: action.includeVersions }, note: (screenshotNote(screenshot, settings.imageTransport) + panelDataNote(requestContext) + (events ? "\n" + [events.annotationsStatus, events.versionsStatus, events.eventsStatus].filter(Boolean).join("; ") : "")).trim() };
-        userMessage.sentContext = { data: panelDataStats(JSON.parse(plan.contextJson).panelData || []), screenshot: Boolean(screenshot), snapshotAt: snapshot && snapshot.at };
+        userMessage.sentContext = Object.assign(sentContextDetails(selectedContext, JSON.parse(plan.contextJson), snapshot, plan.reductions), { screenshot: Boolean(screenshot) });
         setHistory(baseHistory.concat([userMessage]));
         setEditTurn(undefined);
         setPending(partial);
@@ -3244,7 +3350,6 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         setHistory((current) => current.concat([{ role: "assistant", content: result.content, reasoning: result.reasoning, steps: result.steps, charts: answerCharts.length ? answerCharts : undefined, chartsTotal: answerCharts.length ? sentCharts.length : undefined, chartTimezone, chartsVerified: true }]));
         setAttachments([]);
         setIncludeScreenshot(false);
-        resetComposerHeight();
       } catch (reason) {
         if (!isCurrent()) return;
         if (reason && reason.name === "AbortError" && userMessage) {
@@ -3264,6 +3369,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             setHistory((current) => current.map((item) => (item === userMessage ? Object.assign({}, item, { failed: true }) : item)));
             setInput((current) => current || prompt);
           }
+          if (!userMessage) setInput(current => current || prompt);
           setRetry({ prompt, action: Object.assign({}, action, { baseHistory, requestFiles, modelContent: action.modelContent, capturedScreenshot: screenshot, screenshotContextKey }) });
           setError(message);
         }
@@ -3314,6 +3420,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       setComposerDataMode("auto");
       setAnnotationDraft(undefined);
       setAnnotationStatus("");
+      setContextNotice(undefined); setContextPopover(false); setPanelChoice(undefined);
+      contextBaseline.current = liveDescriptor;
       eventsRef.current = undefined;
       resetComposerHeight();
       setEditTurn(undefined);
@@ -3349,8 +3457,15 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             (message.attachments || []).length ? h("div", null, message.attachments.map((item) => `${item.name} · ${Math.ceil(item.bytes / 1024)} КБ`).join("; ")) : null
           ) : null),
           h("div", { style: { display: "flex", alignItems: "center", gap: 8, width: "100%", minWidth: 0 } },
-          h("div", { className: "tech-ai-send-note", style: { flex: "1 1 auto", minWidth: 0 }, "data-testid": "tech-ai-sent-context", title: message.note || undefined },
-            message.sentContext ? (message.sentContext.data.total ? `Данные: ${message.sentContext.data.loaded}/${message.sentContext.data.total}` : "Только структура") + (message.sentContext.screenshot ? " · Снимок" : "") + ((message.attachments || []).length ? ` · Вложений: ${message.attachments.length}` : "") : message.note ? "Контекст отправки — в подробностях выше" : ""
+          h("details", { className: "tech-ai-send-note", style: { flex: "1 1 auto", minWidth: 0 }, "data-testid": "tech-ai-sent-context" },
+            h("summary", { style: { cursor: "pointer", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, title: sentContextCaption(message.sentContext, (message.attachments || []).length) + " — подробности по нажатию" }, sentContextCaption(message.sentContext, (message.attachments || []).length)),
+            message.sentContext && message.sentContext.scope ? h("div", { style: { paddingTop: 6, display: "grid", gap: 4 }, "data-testid": "tech-ai-sent-context-details" },
+              h("div", null, "Панели: " + (message.sentContext.scope.panels.map(panel => `${panel.title} (#${panel.id})`).join(", ") || "не выбраны")),
+              h("div", null, "Период: " + contextRangeLabel(message.sentContext.range, message.sentContext.scope.timeRange.timezone)),
+              message.sentContext.snapshotAt ? h("div", null, "Данные получены: " + new Date(message.sentContext.snapshotAt).toLocaleString()) : null,
+              (message.sentContext.issues || []).map((issue, i) => h("div", { key: i }, `${issue.title || "Панель"} (#${issue.panelId}): ${issue.reason}`)),
+              (message.sentContext.reductions || []).length ? h("div", null, "Сокращение контекста: " + message.sentContext.reductions.join("; ")) : null
+            ) : message.note ? h("div", { style: { paddingTop: 6 } }, message.note) : null
           ),
           h("button", { type: "button", className: "tech-ai-quiet", style: Object.assign({}, styles.quietButton, { flex: "0 0 auto" }), disabled: busy, onClick: () => editMessage(index), "data-testid": "tech-ai-edit-message" }, "Изменить вопрос")
           )
@@ -3385,7 +3500,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     }
 
     const ready = Boolean(settings && context);
-    const panels = availablePanels(context);
+    const panels = availablePanels(liveContext || context);
     const filteredPanels = panels.filter((panel) => `${panel.title || ""} #${panel.id} ${panel.row || ""}`.toLowerCase().includes(panelFilter.trim().toLowerCase()));
     const selectedSet = new Set(selectedPanelIds.map(Number));
     const withQueries = settings ? panels.filter((panel) => selectedSet.has(Number(panel.id)) && panelTargets(settings, panel).length).length : 0;
@@ -3404,7 +3519,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const filesOn = Boolean(settings && settings.fileUploadsEnabled !== false);
     const imageToTextOn = attachmentTools.imageToTextAllowed(settings);
     const setupOpen = Boolean(investigationSetup && investigationStats);
-    const compactContext = contextSummary(withPageState(context), selectedPanelIds, composerDataMode === "structure" ? undefined : snapshotInfo, sendPreview || (composerDataMode !== "auto" ? { dataMode: composerDataMode } : undefined));
+    const dataCurrent = settings && liveContext && reusableSnapshot(selectContextPanels(liveContext, selectedPanelIds));
+    const compactContext = contextSummary(liveContext, selectedPanelIds, composerDataMode === "structure" || !dataCurrent ? undefined : snapshotInfo, sendPreview || (composerDataMode !== "auto" ? { dataMode: composerDataMode } : undefined));
     const autoDataLabel = !settings || settings.includePanelData === false || !snapshotRef.current || !snapshotRef.current.dataPlan ? "Авто: структура" : reusableSnapshot(investigationContext) ? "Авто: снимок" : "Авто: обновить";
     const visibleError = errorPresentation(error);
     const statsLine = lastRequest
@@ -3422,7 +3538,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         (lastRequest.screenshot ? ` · снимок: ${lastRequest.screenshot.format} ${lastRequest.screenshot.width}×${lastRequest.screenshot.height}, ${Math.ceil(lastRequest.screenshot.bytes / 1024)} КБ` : "")
       : "";
 
-    return h("div", { style: Object.assign({}, styles.root, { "--text-secondary": themeColors().muted, "--tech-ai-link": themeColors().link }), ref: rootRef, className: "tech-ai-root",
+    return h("div", { style: Object.assign({}, styles.root, { "--text-secondary": themeColors().muted, "--tech-ai-link": themeColors().link }), ref: rootRef, className: "tech-ai-root", "data-busy": String(busy),
       onDragOver: (event) => { if (filesOn && event.dataTransfer && Array.from(event.dataTransfer.types).includes("Files")) event.preventDefault(); },
       onDrop: (event) => { if (filesOn && event.dataTransfer && event.dataTransfer.files.length) { event.preventDefault(); addFiles(event.dataTransfer.files); } },
     },
@@ -3431,10 +3547,26 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         h("div", { style: { fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, title: context && context.dashboardTitle }, context ? context.dashboardTitle || "Текущая страница Grafana" : "Загрузка контекста…"),
         history.length || busy ? h("button", { type: "button", style: styles.smallButton, onClick: newDialog }, "Новый диалог") : null
       ),
-      context ? h("div", { style: styles.contextStrip, "data-testid": "tech-ai-context-strip" },
-        h("button", { type: "button", style: Object.assign({}, styles.chip, { flex: "0 1 auto", textAlign: "left", cursor: "pointer" }), onClick: () => setTab("context"), "data-testid": "tech-ai-scope-chip", title: `${compactContext.scope} · ${compactContext.period} · ${compactContext.mode}. Изменить контекст` }, `${compactContext.scope} ▾`),
-        h("span", { style: Object.assign({}, styles.chip, { maxWidth: "35%" }), className: "tech-ai-period-chip", title: compactContext.period }, compactContext.period),
-        h("span", { style: Object.assign({}, styles.chip, { flexShrink: 0 }), title: "Состав текущего контекста" }, compactContext.mode)
+      context ? h("div", { style: Object.assign({}, styles.contextStrip, { position: "relative" }), "data-testid": "tech-ai-context-strip" },
+        h("button", { type: "button", style: Object.assign({}, styles.chip, { flex: "0 1 auto", textAlign: "left", cursor: "pointer" }), onClick: () => { setContextPopover(value => !value); setPanelChoice(undefined); setPanelFilter(""); }, "data-testid": "tech-ai-scope-chip", "aria-expanded": contextPopover, className: contextNotice && contextNotice.recent ? "tech-ai-context-changed" + (contextNotice.recent ? " tech-ai-context-recent" : "") : undefined, title: `${compactContext.scope} · ${compactContext.period}. Выбор панелей и изменения контекста` }, `${compactContext.scope} ▾`),
+        h("button", { type: "button", style: Object.assign({}, styles.chip, { maxWidth: "35%", cursor: "pointer" }), className: "tech-ai-period-chip" + (contextNotice && contextNotice.recent && contextNotice.changes.includes("timeRange") ? " tech-ai-context-changed" + (contextNotice.recent ? " tech-ai-context-recent" : "") : ""), "data-testid": "tech-ai-period-chip", title: compactContext.period, onClick: () => { setContextPopover(value => !value); setPanelChoice(undefined); } }, compactContext.period),
+        h("span", { style: Object.assign({}, styles.chip, { flexShrink: 0 }), title: "Состав текущего контекста" }, compactContext.mode),
+        contextPopover ? h("div", { ref: contextPopupRef, role: "dialog", "aria-label": panelChoice ? "Выберите панель" : "Контекст диалога", "data-testid": "tech-ai-context-popover", style: { position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 30, maxHeight: "min(420px, 60dvh)", overflowY: "auto", padding: 12, display: "grid", gap: 8, border: "1px solid rgba(128,128,128,.4)", borderRadius: 8, background: themeColors().background, boxShadow: "0 8px 30px rgba(0,0,0,.25)" }, onKeyDown: event => { if (event.key === "Escape") { event.stopPropagation(); setContextPopover(false); setPanelChoice(undefined); } } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, h("strong", { style: { flex: 1 } }, panelChoice ? `Выберите панель · ${panelChoice.action.label || "для вопроса"}` : "Контекст диалога"), h("button", { type: "button", style: styles.quietButton, "aria-label": "Закрыть выбор контекста", onClick: () => { setContextPopover(false); setPanelChoice(undefined); } }, "×")),
+          contextNotice ? h("details", { open: !panelChoice, "data-testid": "tech-ai-context-change-details", style: styles.context },
+            h("summary", { style: { cursor: "pointer" } }, "Изменено: " + contextNotice.changes.map(key => ({ panels: "панели", timeRange: "период", variables: "переменные" })[key]).join(", ")),
+            contextNotice.changes.includes("panels") ? h("div", null, `${contextNotice.before.panels.map(panel => panel.title).join(", ") || "Без панелей"} → ${contextNotice.after.panels.map(panel => panel.title).join(", ") || "Без панелей"}`) : null,
+            contextNotice.changes.includes("timeRange") ? h("div", null, `${contextRangeLabel(contextNotice.before.timeRange)} → ${contextRangeLabel(contextNotice.after.timeRange)}`) : null,
+            contextNotice.changes.includes("variables") ? h("div", { style: { overflowWrap: "anywhere" } }, `${JSON.stringify(contextNotice.before.variables)} → ${JSON.stringify(contextNotice.after.variables)}`) : null,
+            h("div", null, "История сохранена. Старые сообщения относятся к своему прежнему контексту."),
+            history.length && !busy ? h("button", { type: "button", style: styles.quietButton, onClick: newDialog }, "Начать новый диалог") : null
+          ) : null,
+          h("div", { style: styles.context }, `Период: ${compactContext.period}`),
+          h("input", { style: styles.input, type: "search", placeholder: "Название панели или #ID", "aria-label": "Поиск панели в чате", "data-testid": "tech-ai-chat-panel-filter", value: panelFilter, onChange: event => setPanelFilter(event.target.value) }),
+          filteredPanels.map(panel => h("button", { key: panel.id, type: "button", style: Object.assign({}, styles.smallButton, { textAlign: "left", whiteSpace: "normal" }), disabled: busy, "aria-pressed": selectedSet.has(Number(panel.id)), "data-testid": "tech-ai-chat-panel", "data-panel-id": String(panel.id), onClick: () => { const id = Number(panel.id); setSelectedPanelIds([id]); if (panelChoice) setPanelChoice(Object.assign({}, panelChoice, { selected: id })); else setContextPopover(false); } }, `${panel.title || "Панель"} (#${panel.id})`)),
+          !filteredPanels.length ? h("div", { style: styles.context }, "Панели не найдены") : null,
+          !panelChoice && panels.length > 1 ? h("button", { type: "button", style: styles.quietButton, disabled: busy, onClick: () => { setSelectedPanelIds(panels.map(panel => Number(panel.id))); setContextPopover(false); } }, "Выбрать все панели") : null
+        ) : null
       ) : null,
       h("div", { style: styles.tabs, role: "tablist" },
         [["chat", "Чат"], ["context", `Контекст · панели ${selectedPanelIds.length}/${panels.length}`], ["diag", "Диагностика"]].map(([id, label]) =>
@@ -3616,8 +3748,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           ),
           h("div", null, `Модель: ${sendPreview.model || "не задана"}`),
           h("label", null, "Данные для этого запроса: ", h("select", { value: sendPreview.dataMode, "data-testid": "tech-ai-data-mode", onChange: (event) => changeDataMode(event.target.value) },
-            h("option", { value: "structure" }, "Только структура"),
-            h("option", { value: "snapshot", disabled: !settings || !reusableSnapshot(investigationContext) }, "Готовый снимок — без запросов"),
+            h("option", { value: "structure" }, "Без данных"),
+            h("option", { value: "snapshot", disabled: !settings || !reusableSnapshot(investigationContext) }, "Полученные данные — без новых запросов"),
             h("option", { value: "sample", disabled: settings.includePanelData === false || !Number(settings.explainSampleRows) }, "Короткий пример"),
             h("option", { value: "investigation" }, "Расследование: настроить диапазон")
           )),
@@ -3655,8 +3787,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             title: "Enter — отправить · Shift+Enter — новая строка",
             "aria-description": "Enter — отправить, Shift+Enter — новая строка",
             value: input,
-            disabled: busy || !ready || readingFiles,
-            placeholder: "Например: исправь PromQL этой панели",
+            disabled: !ready || readingFiles,
+            placeholder: busy ? "Можно написать следующий вопрос — он не отправится автоматически" : "Например: исправь PromQL этой панели",
             onChange: (event) => {
               // Native resize не всегда отдаёт pointerup в React; запоминаем высоту до автороста.
               const height = event.currentTarget.getBoundingClientRect().height;
@@ -3667,7 +3799,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             onPointerUp: (event) => { const height = event.currentTarget.getBoundingClientRect().height; if (Math.abs(height - composerSize.current.startHeight) > 1) composerSize.current.height = Math.max(42, Math.min(160, height)); },
             onPaste: (event) => { if (filesOn && event.clipboardData && event.clipboardData.files.length) { event.preventDefault(); addFiles(event.clipboardData.files); } },
             onKeyDown: (event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
+              if (event.key === "Enter" && !event.shiftKey && !busy) {
                 event.preventDefault();
                 submitComposer();
               }
@@ -3676,11 +3808,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           h("div", { style: styles.composerToolbar },
             filesOn ? h("input", { ref: fileRef, type: "file", multiple: true, style: { display: "none" }, "data-testid": "tech-ai-file-input", onChange: (event) => { addFiles(event.target.files); event.target.value = ""; } }) : null,
             filesOn ? h("button", { type: "button", style: styles.smallButton, title: "Изображение или текстовый файл. Можно вставить из буфера или перетащить в чат.", disabled: busy || readingFiles, onClick: () => fileRef.current.click() }, readingFiles ? "Читаем файлы…" : "+ Файл") : null,
-            settings && settings.screenshotEnabled !== false ? h("button", { type: "button", style: Object.assign({}, styles.smallButton, includeScreenshot ? { borderColor: "#5794f2", background: "rgba(87,148,242,.14)" } : {}), "data-testid": "tech-ai-screenshot-toggle", "aria-pressed": includeScreenshot, disabled: busy, title: "Снимок только для этого вопроса. Браузер попросит выбрать вкладку.", onClick: () => toggleScreenshot(!includeScreenshot) }, includeScreenshot ? "Снимок ✓" : "Снимок") : null,
+            settings && settings.screenshotEnabled !== false ? h("button", { type: "button", style: Object.assign({}, styles.smallButton, includeScreenshot ? { borderColor: "#5794f2", background: "rgba(87,148,242,.14)" } : {}), className: "tech-ai-screen-shot", "aria-label": "Сделать и отправить снимок экрана", "data-testid": "tech-ai-screenshot-toggle", "aria-pressed": includeScreenshot, disabled: busy, title: "Снимок экрана только для этого вопроса. Для захвата вкладки браузер попросит подтверждение.", onClick: () => toggleScreenshot(!includeScreenshot) }, h("span", { className: "tech-ai-screen-label" }, includeScreenshot ? "Снимок экрана ✓" : "Снимок экрана"), h("svg", { viewBox: "0 0 18 16", fill: "none", stroke: "currentColor", strokeWidth: 1.5, "aria-hidden": true }, h("path", { d: "M2 5h4l1-2h4l1 2h4v9H2z" }), h("circle", { cx: 9, cy: 9, r: 2.5 }))) : null,
             h("select", { "aria-label": "Данные для вашего вопроса", "data-testid": "tech-ai-composer-data-mode", style: { minWidth: 0, flex: "1 1 120px", maxWidth: "100%", minHeight: 32, color: "inherit", background: themeColors().background, border: "1px solid rgba(128,128,128,.3)", borderRadius: 6 }, value: composerDataMode, disabled: busy || !ready, onChange: (event) => { setComposerDataMode(event.target.value); setSendPreview(undefined); } },
               h("option", { value: "auto" }, autoDataLabel),
-              h("option", { value: "structure" }, "Только структура — без данных"),
-              h("option", { value: "snapshot", disabled: !settings || !reusableSnapshot(investigationContext) }, "Готовый снимок — без запросов"),
+              h("option", { value: "structure" }, "Без данных — только запросы и настройки"),
+              h("option", { value: "snapshot", disabled: !settings || !reusableSnapshot(investigationContext) }, "Полученные данные — без новых запросов"),
               h("option", { value: "sample", disabled: !settings || settings.includePanelData === false || !Number(settings.explainSampleRows) }, "Короткий пример"),
               h("option", { value: "investigation" }, "Расследование…")
             ),
@@ -4250,6 +4382,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
 
   return {
     plugin,
+    __context: { contextDescriptor, contextDifference, contextRangeLabel, sentContextDetails, sentContextCaption },
     __features: { sourceIntervalMs, peakWindow, recommendedPeakWindow, aroundTimeRange, grafanaRequest, executeSchemaTool, executeQueryTool, parseExplorePanes, mergeExtensionQueries, loadContext, validateDashboardProposal, loadInvestigationEvents, createDashboardAnnotation, capturePanelCanvases, ProposalView },
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
 __test: { limitAnswerCharts, panelUnit, saveHistory, chartsForContext, chartTime, fallbackMarkdown, markdownHtml, linkPanelTitles, sparkPoints, pickAnswerCharts, formatChartValue, summarizeSeries, findPanelElement, contextSummary, errorPresentation, presentationCss, loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },

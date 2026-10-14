@@ -36,7 +36,7 @@ const puppeteer = require('puppeteer');
   await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/d/tech/tech-stand?orgId=1&from=now-24h&to=now&var-api_key=gsk_supersecretvalue12345', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true, timeout: 30000 });
   await page.click('#tech-ai-assistant-launcher');
-  await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
+  await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])', { visible: true, timeout: 30000 });
   const chatTabActive = await page.$eval('[data-testid="tech-ai-tab-chat"]', (node) => node.getAttribute('aria-selected') === 'true');
   if (!chatTabActive) throw new Error('Chat tab must be active by default');
   const actionsCollapsed = await page.$eval('[data-testid="tech-ai-actions-panel"]', (node) => !node.open);

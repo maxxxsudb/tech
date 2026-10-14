@@ -35,7 +35,7 @@ const assert = require('node:assert/strict');
     await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/d/tech/tech-stand?from=now-6h&to=now', { waitUntil: 'networkidle2' });
     await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true });
     await page.click('#tech-ai-assistant-launcher');
-    await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true });
+    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])', { visible: true });
     await page.waitForNetworkIdle({ idleTime: 750, timeout: 30000 });
     const clickText = async (text) => page.evaluate((text) => {
       const button = [...document.querySelectorAll('#tech-ai-assistant-drawer button')].find((button) => button.textContent.trim() === text);
@@ -44,7 +44,7 @@ const assert = require('node:assert/strict');
     }, text);
     const waitAnswer = async (number) => {
       await page.waitForFunction((number) => document.querySelector('[data-testid="tech-ai-history"]')?.innerText.includes(`RELEASE080-${number}`), {}, number);
-      await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+      await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     };
     const confirmSend = async () => {
       await page.waitForSelector('[data-testid="tech-ai-send-preview"]', { visible: true });

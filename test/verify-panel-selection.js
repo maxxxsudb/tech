@@ -35,7 +35,7 @@ const puppeteer = require('puppeteer');
   await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/d/tech/tech-stand?orgId=1&from=now-24h&to=now', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true, timeout: 30000 });
   await page.click('#tech-ai-assistant-launcher');
-  await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
+  await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])', { visible: true, timeout: 30000 });
   await page.click('[data-testid="tech-ai-tab-context"]');
   const initial = await page.$eval('[data-testid="tech-ai-panel-summary"]', (node) => node.textContent);
   if (!/^Передаём панели: \d+ из \d+$/.test(initial)) throw new Error(`Panel summary missing: ${initial}`);

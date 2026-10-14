@@ -64,12 +64,12 @@ function contextOf(body) {
       await click('Отправить');
       await page.waitForSelector('[data-testid="tech-ai-send-preview"]');
       await page.$eval('[data-testid="tech-ai-send-preview"] button', node => node.click());
-      await page.waitForSelector('[data-testid="tech-ai-composer"] textarea:not([disabled])');
+      await page.waitForSelector('.tech-ai-root[data-busy="false"] [data-testid="tech-ai-composer"] textarea:not([disabled])');
       assert.ok(requests.length > count);
     };
     await page.goto(`${root}/d/${uid}/features?from=${from}&to=${to}&timezone=utc`, { waitUntil: 'networkidle2' });
     await page.waitForSelector('#tech-ai-assistant-launcher'); await page.click('#tech-ai-assistant-launcher');
-    await page.waitForSelector('[data-testid="tech-ai-composer"] textarea:not([disabled])');
+    await page.waitForSelector('.tech-ai-root[data-busy="false"] [data-testid="tech-ai-composer"] textarea:not([disabled])');
     metadata.length = 0;
     stage = 'manual validation';
     await ask('Объясни CPU', 'sample');
@@ -99,7 +99,7 @@ function contextOf(body) {
     await page.click('[data-testid="tech-ai-allow-schema"]'); await page.click('[data-testid="tech-ai-include-annotations"]'); await page.click('[data-testid="tech-ai-include-versions"]');
     mode = 'investigate';
     await click('Начать расследование');
-    await page.waitForFunction(() => !document.querySelector('[data-testid="tech-ai-composer"] textarea').disabled && document.querySelectorAll('[data-testid="tech-ai-answer"]').length >= 2);
+    await page.waitForFunction(() => document.querySelector('.tech-ai-root').dataset.busy === 'false' && document.querySelectorAll('[data-testid="tech-ai-answer"]').length >= 2);
     const investigation = contextOf(requests.at(-1));
     assert.equal(Number(investigation.timeRange.from), from + 1200000);
     assert.equal(Number(investigation.timeRange.to), from + 2100000);
@@ -137,7 +137,7 @@ function contextOf(body) {
     const panes = { a: { datasource: 'loki', queries: [{ refId: 'A', expr: '{service_name="keycloak"}' }], range: { from: String(from), to: String(to) } } };
     await page.goto(`${root}/explore?schemaVersion=1&panes=${encodeURIComponent(JSON.stringify(panes))}&orgId=1`, { waitUntil: 'networkidle2' });
     await page.waitForSelector('#tech-ai-assistant-launcher'); await page.click('#tech-ai-assistant-launcher');
-    await page.waitForSelector('[data-testid="tech-ai-composer"] textarea:not([disabled])');
+    await page.waitForSelector('.tech-ai-root[data-busy="false"] [data-testid="tech-ai-composer"] textarea:not([disabled])');
     await ask('Объясни запрос Explore', 'structure');
     const explore = contextOf(requests.at(-1));
     assert.equal(explore.isExplore, true); assert.equal(explore.panels[0].targets[0].expr, '{service_name="keycloak"}');

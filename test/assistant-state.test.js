@@ -38,6 +38,59 @@ function response(text, finishReason = "stop") { return new Response(JSON.string
 const settle = () => new Promise(resolve => setImmediate(resolve));
 async function waitDone() { for (let i = 0; i < 100 && state[6]; i++) await settle(); assert.equal(state[6], false); }
 
+test("во время ответа можно писать черновик, Enter не отправляет его и завершение не очищает", async () => {
+  reset(); let finish, calls = 0;
+  global.fetch = () => { calls++; return new Promise(resolve => { finish = resolve; }); };
+  button(render(), "Отправить").props.onClick(); await settle();
+  assert.equal(state[5], "");
+  const area = nodes(render()).find(node => node.type === "textarea");
+  assert.equal(area.props.disabled, false);
+  area.props.onChange({ target: { value: "Next question" }, currentTarget: { getBoundingClientRect: () => ({ height: 110 }) } });
+  let prevented = false;
+  area.props.onKeyDown({ key: "Enter", shiftKey: false, preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, false); assert.equal(calls, 1);
+  finish(response("Answer")); await waitDone();
+  assert.equal(state[5], "Next question"); assert.equal(refs[12].current.height, 110); assert.equal(calls, 1);
+});
+
+test("ошибка до отправки вопроса возвращает текст и не затирает новый черновик", async () => {
+  for (const draft of ["", "Next question"]) {
+    reset([], { includePanelData: true });
+    state[1].panels = [{ id: 1, title: "CPU", datasource: { uid: "loki", type: "loki" }, targets: [{ refId: "A", expr: "up" }] }]; state[15] = [1];
+    let finish;
+    global.fetch = () => new Promise(resolve => { finish = resolve; });
+    state[25] = "sample";
+    button(render(), "Отправить").props.onClick(); await settle();
+    state[5] = draft;
+    finish(new Response('{"message":"Error"}', { status: 503 })); await settle();
+    if (state[6]) finish(new Response('{"error":{"message":"No model"}}', { status: 503 }));
+    await waitDone();
+    assert.equal(state[5], draft || "Test");
+  }
+});
+
+test("действие одной панели открывает выбор в чате вместо ошибки и запросов", () => {
+  reset(); state[1].panels = [{ id: 1, title: "CPU", targets: [] }, { id: 2, title: "RAM", targets: [] }]; state[15] = [1, 2];
+  let calls = 0; global.fetch = async () => { calls++; return response("Answer"); };
+  button(render(), "Исправить запрос").props.onClick();
+  assert.equal(state[7], ""); assert.equal(state[20], "chat"); assert.equal(state[30], true); assert.equal(calls, 0);
+  const popup = byId(render(), "tech-ai-context-popover");
+  assert.equal(popup.props["aria-label"], "Выберите панель");
+  nodes(popup).find(node => node.props["data-panel-id"] === "2").props.onClick();
+  assert.deepEqual(state[15], [2]); assert.equal(state[31].selected, 2); assert.equal(calls, 0);
+});
+
+test("подпись отправки свёрнута и не меняется при выборе другого периода", async () => {
+  reset(); state[1].panels = [{ id: 1, title: "CPU", targets: [] }]; state[15] = [1];
+  global.fetch = async () => response("Answer");
+  button(render(), "Отправить").props.onClick(); await waitDone();
+  const before = JSON.stringify(state[3][0].sentContext);
+  state[1].timeRange = { from: "now-24h", to: "now" };
+  const details = byId(render(), "tech-ai-sent-context");
+  assert.equal(details.type, "details"); assert.ok(!details.props.open);
+  assert.equal(JSON.stringify(state[3][0].sentContext), before);
+});
+
 test("новый диалог не получает ответ или cleanup старого запроса", async () => {
   reset();
   let rejectOld, finishNew;

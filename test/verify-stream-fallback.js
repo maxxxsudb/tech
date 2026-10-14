@@ -23,7 +23,7 @@ const puppeteer = require('puppeteer');
   await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/d/tech/tech-stand?orgId=1', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true, timeout: 30000 });
   await page.click('#tech-ai-assistant-launcher');
-  await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true, timeout: 30000 });
+  await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])', { visible: true, timeout: 30000 });
   await page.type('#tech-ai-assistant-drawer textarea', 'fallback test');
   await page.evaluate(() => {
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
@@ -41,7 +41,7 @@ const puppeteer = require('puppeteer');
   await page.click('[data-testid="tech-ai-send-preview"] button');
   await page.waitForFunction(() => {
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
-    return !drawer.querySelector('textarea').disabled && (drawer.innerText.match(/NON_STREAM_FALLBACK_OK/g) || []).length === 2;
+    return drawer.querySelector('.tech-ai-root').dataset.busy === 'false' && !drawer.querySelector('textarea').disabled && (drawer.innerText.match(/NON_STREAM_FALLBACK_OK/g) || []).length === 2;
   }, { timeout: 30000 });
   console.log(JSON.stringify({ streamValues }));
   if (JSON.stringify(streamValues) !== JSON.stringify([true, false, false])) throw new Error(`Unexpected fallback sequence: ${JSON.stringify(streamValues)}`);

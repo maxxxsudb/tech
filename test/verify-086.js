@@ -97,7 +97,7 @@ function contextOf(body) {
         history.replaceState(history.state, '', url);
       });
       await page.click('#tech-ai-assistant-launcher');
-      await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+      await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     };
     const explain = async () => {
       await page.waitForSelector('[data-testid="tech-ai-welcome"] button');
@@ -106,7 +106,7 @@ function contextOf(body) {
       await page.select('[data-testid="tech-ai-data-mode"]', 'sample');
       await page.$eval('[data-testid="tech-ai-send-preview"] button', node => node.click());
       await page.waitForSelector('[data-testid="tech-ai-answer-charts"]');
-      await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+      await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     };
     stage = 'eight rows and lazy mounting';
     await openAssistant();

@@ -53,17 +53,18 @@ function contextOf(body) {
     const dashboardUrl = `${root}/d/${uid}/ui-test?from=${from}&to=${to}&timezone=utc`;
     const click = async label => page.evaluate(label => { const button = [...document.querySelectorAll('#tech-ai-assistant-drawer button')].find(node => node.textContent.trim() === label); if (!button) throw new Error(`Missing ${label}`); button.click(); }, label);
     const ask = async (text, mode) => {
+      await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
       await page.select('[data-testid="tech-ai-composer-data-mode"]', mode);
       await page.type('#tech-ai-assistant-drawer textarea', text);
       await click('Отправить'); await page.waitForSelector('[data-testid="tech-ai-send-preview"]');
       await page.$eval('[data-testid="tech-ai-send-preview"] button', node => node.click());
-      await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+      await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     };
     await page.goto(dashboardUrl, { waitUntil: 'networkidle2' }); await page.waitForSelector('#tech-ai-assistant-launcher'); await page.click('#tech-ai-assistant-launcher');
-    await page.waitForSelector('[data-testid="tech-ai-composer-data-mode"]');
+    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     stage = 'data modes and search';
     await ask('Explain CPU', 'sample'); assert.ok(contextOf(requests.at(-1)).panelData);
-    assert.match(await page.$eval('[data-testid="tech-ai-sent-context"]', node => node.textContent), /Данные: 1\/1/);
+    assert.match(await page.$eval('[data-testid="tech-ai-sent-context"] summary', node => node.textContent), /Данные 1\/1/);
     const calls = datasourceCalls;
     await ask('Use previous results', 'snapshot'); assert.equal(datasourceCalls, calls); assert.ok(contextOf(requests.at(-1)).panelData);
     await ask('Explain only the JSON', 'structure'); assert.equal(datasourceCalls, calls); assert.equal(contextOf(requests.at(-1)).panelData, undefined);
@@ -81,7 +82,7 @@ function contextOf(body) {
     await ask('Look at the picture', 'structure'); await page.waitForSelector('[data-testid="tech-ai-error"]');
     const image = requests.at(-1).messages.at(-1).content.find(part => part.type === 'image_url').image_url.url;
     assert.equal(await page.evaluate(() => window.captureCalls), 1);
-    await click('Повторить'); await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])');
+    await click('Повторить'); await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
     assert.equal(requests.at(-1).messages.at(-1).content.find(part => part.type === 'image_url').image_url.url, image);
     assert.equal(await page.evaluate(() => window.captureCalls), 1);
     assert.equal(await page.$eval('[data-testid="tech-ai-screenshot-toggle"]', node => node.getAttribute('aria-pressed')), 'false');
@@ -132,11 +133,11 @@ function contextOf(body) {
     });
     const extensions = await page.evaluateHandle(() => [...document.querySelectorAll('a,button,[role="menuitem"],span')].find(node => node.textContent.trim() === 'Extensions'));
     assert.ok(extensions.asElement(), 'Missing Extensions submenu');
-    await page.evaluate(() => {
-      const node = [...document.querySelectorAll('[role="menuitem"],button,a,span')].find(node => node.textContent.trim() === 'Extensions');
-      const item = node.closest('[role="menuitem"]') || node;
-      item.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await extensions.asElement().hover();
+    if (!(await page.waitForFunction(() => [...document.querySelectorAll('a,button,[role="menuitem"]')].some(node => node.textContent.trim() === 'Спросить AI'), { timeout: 1500 }).then(() => true).catch(() => false))) {
+      await extensions.asElement().click();
+    }
     await page.waitForFunction(() => [...document.querySelectorAll('a,button,[role="menuitem"]')].some(node => node.textContent.trim() === 'Спросить AI'));
     await page.evaluate(() => [...document.querySelectorAll('a,button,[role="menuitem"]')].find(node => node.textContent.trim() === 'Спросить AI').click());
     await page.waitForSelector('[role="dialog"] [data-testid="tech-ai-composer"]');

@@ -10,6 +10,7 @@ class AppPlugin { constructor() { const proxy = new Proxy(this, { get: () => () 
 const runtime = { config: { appSubUrl: '/crf/dashboard', bootData: { user: { orgId: 1, orgRole: 'Admin' } } }, getDataSourceSrv: () => ({ getInstanceSettings: uid => uid === 'prom' ? { uid, type: 'prometheus' } : undefined }) };
 const moduleApi = factory({ AppPlugin, BusEventWithPayload: class {} }, runtime, { createElement: () => null }, {}, require('../plugin/attachments.js'), require('../plugin/conversation.js'), require('../plugin/query-tools.js'));
 const f = moduleApi.__features, t = moduleApi.__test;
+const c = moduleApi.__context;
 const settings = { ...t.defaults };
 const from = Date.parse('2026-10-14T09:00:00Z'), to = from + 3600000;
 const panel = { id: 1, title: 'CPU', datasource: { uid: 'prom', type: 'prometheus' }, targets: [{ refId: 'A', expr: 'up' }] };
@@ -18,6 +19,27 @@ const originalFetch = global.fetch;
 const originalLocation = global.location;
 test.after(() => { global.fetch = originalFetch; global.location = originalLocation; });
 function reply(body, status = 200) { return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }); }
+
+test('описатель контекста стабилен к порядку выбора и переменных', () => {
+  const a = { ...context, variables: { z: ['a'], b: 'b' }, panels: [panel, { id: 2, title: 'RAM' }] };
+  const b = { ...a, variables: { b: 'b', z: ['a'] } };
+  assert.deepEqual(c.contextDifference(c.contextDescriptor(a, [2, 1]), c.contextDescriptor(b, [1, 2])), []);
+  assert.deepEqual(c.contextDifference(c.contextDescriptor(a, [1]), c.contextDescriptor(a, [2])), ['panels']);
+  assert.deepEqual(c.contextDifference(c.contextDescriptor(a, [1]), c.contextDescriptor({ ...a, timeRange: { from: 'now-24h', to: 'now' } }, [1])), ['timeRange']);
+});
+
+test('подпись различает лимит, обрезку контекста, ошибки и пустые данные', () => {
+  const raw = [{ panelId: 1, title: 'CPU', results: [{ refId: 'A', result: { empty: true } }] }, { panelId: 2, title: 'RAM', skipped: 'Лимит 1 панели' }, { panelId: 3, title: 'Logs', results: [{ refId: 'A', result: { error: 'Timeout' } }] }, { panelId: 4, title: 'Disk', results: [] }];
+  const info = c.sentContextDetails(context, { panelData: raw.slice(0, 3) }, { panelData: raw, range: { from, to }, at: 123 }, ['Урезаны данные']);
+  assert.equal(info.data.loaded, 1); assert.equal(info.data.errors, 1); assert.equal(info.data.omitted, 1); assert.equal(info.data.total, 4);
+  assert.ok(info.issues.some(issue => issue.reason.includes('данных не найдено')));
+  assert.ok(info.issues.some(issue => issue.reason.includes('Лимит')));
+  assert.ok(info.issues.some(issue => issue.reason.includes('Timeout')));
+  assert.ok(info.issues.some(issue => issue.reason.includes('окна контекста')));
+  assert.equal(c.sentContextCaption(info, 0), 'Данные 1/4 · 2 пропущено · ошибок 1');
+  raw[0].title = 'Changed'; assert.equal(info.issues[0].title, 'CPU');
+  assert.ok(!c.contextRangeLabel(info.range, 'utc').includes(String(from)));
+});
 
 test('пик ограничен подтверждённым периодом; неверное время не запускает запрос', async () => {
   assert.deepEqual(f.aroundTimeRange(from + 30000, context, 4), { from, to: from + 150000 });
