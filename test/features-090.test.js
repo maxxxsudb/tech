@@ -29,6 +29,36 @@ test('пик ограничен подтверждённым периодом; �
   assert.equal(calls, 0);
 });
 
+test('окно пика использует исходный шаг и смещено влево', () => {
+  const wide = { ...context, timeRange: { from, to: from + 86400000 } };
+  const at = from + 3600000;
+  const peak = f.recommendedPeakWindow(wide, { panelId: 1 }, { maxAt: at, sampleIntervalMs: 600000 });
+  assert.equal(peak.beforeMinutes, 20); assert.equal(peak.afterMinutes, 10);
+  assert.deepEqual(peak.range, { from: at - 1200000, to: at + 600000 });
+  const old = f.recommendedPeakWindow(wide, { panelId: 1 }, { maxAt: at, points: [[from, 1], [at, 2]] });
+  assert.equal(old.beforeMinutes, 3); assert.equal(old.afterMinutes, 1);
+});
+
+test('lookback rate увеличивает окно; поля пользователя проверяются и ограничиваются дашбордом', () => {
+  const ctx = { ...context, panels: [{ ...panel, targets: [{ refId: 'A', expr: 'rate(http_requests_total[5m])' }] }] };
+  const peak = f.recommendedPeakWindow(ctx, { panelId: 1 }, { maxAt: from + 60000, refId: 'A', sampleIntervalMs: 60000 });
+  assert.equal(peak.beforeMinutes, 5);
+  assert.equal(peak.range.from, from);
+  assert.deepEqual(f.peakWindow(context, from + 60000, 10, 2), { from, to: from + 180000 });
+  for (const before of ['', -1, Infinity, 'bad']) assert.throws(() => f.peakWindow(context, from + 60000, before, 1));
+  assert.throws(() => f.peakWindow(context, from + 60000, 0, 0));
+  assert.throws(() => f.peakWindow(context, to + 1, 1, 1), /вне/);
+});
+
+test('исходный шаг записывается до прореживания мини-графика', () => {
+  const charts = [];
+  const times = Array.from({ length: 180 }, (_, index) => from + index * 300000);
+  t.summarizeSeries({ name: 'CPU', type: 'number' }, { refId: 'A' }, times, times.map((_, index) => index), 3, charts, []);
+  assert.equal(charts[0].sampleIntervalMs, 300000);
+  assert.ok(charts[0].points.length < times.length);
+  assert.equal(f.sourceIntervalMs([0, 1000, 2000, 100000, 101000]), 1000);
+});
+
 test('запрос вокруг пика отправляет точный узкий период', async () => {
   let body;
   global.fetch = async (_url, options) => { body = JSON.parse(options.body); return reply({ results: {} }); };
@@ -71,6 +101,18 @@ test('таймаут и отмена прерывают запрос метад�
   const request = f.grafanaRequest('/api/annotations', { signal: controller.signal });
   controller.abort();
   await assert.rejects(request, error => error.name === 'AbortError');
+});
+
+test('Loki success без data — пустая схема, не ошибка; некорректный ответ остаётся ошибкой', async () => {
+  for (const payload of [{ status: 'success' }, { status: 'success', data: null }, { status: 'success', data: [] }]) {
+    global.fetch = async () => reply(payload);
+    const result = await f.executeSchemaTool(settings, context, { datasourceUid: 'prom', action: 'labels' });
+    assert.equal(result.total, 0); assert.deepEqual(result.items, []);
+  }
+  for (const payload of [{}, { status: 'error', error: 'backend unavailable' }, { status: 'success', data: {} }]) {
+    global.fetch = async () => reply(payload);
+    await assert.rejects(f.executeSchemaTool(settings, context, { datasourceUid: 'prom', action: 'labels' }));
+  }
 });
 
 test('разведка и запросы данных делят один бюджет; схема выключена без согласия', async () => {

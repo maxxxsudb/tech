@@ -88,6 +88,12 @@ function contextOf(body) {
     await page.click('[data-testid="tech-ai-investigate-peak"]');
     await page.waitForSelector('[data-testid="tech-ai-investigation-setup"]');
     assert.equal(datasource.length, beforePeak);
+    assert.equal(await page.$eval('[data-testid="tech-ai-peak-before"]', node => Number(node.value)), 60);
+    assert.equal(await page.$eval('[data-testid="tech-ai-peak-after"]', node => Number(node.value)), 30);
+    for (const [selector, value] of [['[data-testid="tech-ai-peak-before"]', '10'], ['[data-testid="tech-ai-peak-after"]', '5']]) {
+      await page.click(selector, { clickCount: 3 }); await page.keyboard.press('Backspace'); await page.type(selector, value);
+    }
+    assert.equal(datasource.length, beforePeak);
     await page.evaluate(() => { const label = [...document.querySelectorAll('[data-testid="tech-ai-investigation-setup"] label')].find(node => node.textContent.includes('дополнительные read-only')); label.querySelector('input').click(); });
     await page.waitForSelector('[data-testid="tech-ai-allow-schema"]');
     await page.click('[data-testid="tech-ai-allow-schema"]'); await page.click('[data-testid="tech-ai-include-annotations"]'); await page.click('[data-testid="tech-ai-include-versions"]');
@@ -95,8 +101,8 @@ function contextOf(body) {
     await click('Начать расследование');
     await page.waitForFunction(() => !document.querySelector('[data-testid="tech-ai-composer"] textarea').disabled && document.querySelectorAll('[data-testid="tech-ai-answer"]').length >= 2);
     const investigation = contextOf(requests.at(-1));
-    assert.equal(Number(investigation.timeRange.from), from + 1680000);
-    assert.equal(Number(investigation.timeRange.to), from + 1920000);
+    assert.equal(Number(investigation.timeRange.from), from + 1200000);
+    assert.equal(Number(investigation.timeRange.to), from + 2100000);
     assert.equal(investigation.annotations[0].text, 'Deployment');
     assert.equal(investigation.versionChanges.previousVersion, 0);
     assert.ok(metadata.some(url => url.includes('/loki/api/v1/labels')));

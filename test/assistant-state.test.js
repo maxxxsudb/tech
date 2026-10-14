@@ -283,3 +283,24 @@ test("закрытый диалог не получает поздний ста�
   resolve(new Response('{"id":1}')); await settle(); await settle();
   assert.equal(state[27], undefined); assert.equal(state[28], ""); assert.equal(state[6], false);
 });
+
+test("редактирование окна пика не запрашивает данные, неверное окно блокирует запуск", async () => {
+  reset();
+  const from = Date.parse("2026-10-14T09:00:00Z"), at = from + 1800000;
+  state[1].timeRange = { from, to: from + 3600000 };
+  const chart = { panelId: 1, title: "CPU", series: [{ name: "CPU", max: 80, maxAt: at, sampleIntervalMs: 60000 }] };
+  state[3] = [{ role: "assistant", content: "CPU", charts: [chart] }];
+  const sent = [];
+  global.fetch = async (_url, options) => { sent.push(JSON.parse(options.body)); return response("Answer"); };
+  nodes(render()).find(node => node.props.onInvestigatePeak).props.onInvestigatePeak(chart, chart.series[0]);
+  assert.equal(sent.length, 0);
+  byId(render(), "tech-ai-peak-before").props.onChange({ target: { value: "" } });
+  assert.equal(button(render(), "Начать расследование").props.disabled, true);
+  byId(render(), "tech-ai-peak-before").props.onChange({ target: { value: "10" } });
+  byId(render(), "tech-ai-peak-after").props.onChange({ target: { value: "2" } });
+  assert.equal(sent.length, 0);
+  button(render(), "Начать расследование").props.onClick(); await waitDone();
+  assert.equal(sent.length, 1);
+  const actual = JSON.parse(sent[0].messages[0].content.split("Текущий контекст Grafana:\n")[1]);
+  assert.deepEqual(actual.timeRange, { from: at - 600000, to: at + 120000 });
+});

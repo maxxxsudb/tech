@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.9.0";
+  const PLUGIN_VERSION = "0.9.1";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -873,7 +873,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       }
       const chartPoints = times.map((time, index) => [Number(time), typeof values[index] === "number" && Number.isFinite(values[index]) ? values[index] : null])
         .filter((point) => Number.isFinite(point[0])).sort((a, b) => a[0] - b[0]);
-      if (chartPoints.length > 1) charts.push({ name: result.name, fieldName: field.name, fieldDisplayName, frameRefId: schema.refId, unit: result.unit, points: sparkPoints(chartPoints), min: roundValue(min[1]), minAt: Number(min[0]), max: roundValue(max[1]), maxAt: Number(max[0]), avg: roundValue(sum / points.length), first: roundValue(first[1]), last: roundValue(last[1]), firstAt: chartPoints[0][0], lastAt: chartPoints[chartPoints.length - 1][0] });
+      if (chartPoints.length > 1) charts.push({ name: result.name, fieldName: field.name, fieldDisplayName, frameRefId: schema.refId, unit: result.unit, sampleIntervalMs: sourceIntervalMs(chartPoints.map(point => point[0])), points: sparkPoints(chartPoints), min: roundValue(min[1]), minAt: Number(min[0]), max: roundValue(max[1]), maxAt: Number(max[0]), avg: roundValue(sum / points.length), first: roundValue(first[1]), last: roundValue(last[1]), firstAt: chartPoints[0][0], lastAt: chartPoints[chartPoints.length - 1][0] });
     }
     return Object.assign(result, {
       min: roundValue(min[1]),
@@ -1226,6 +1226,43 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     return result;
   }
 
+  function sourceIntervalMs(times) {
+    const sorted = Array.from(new Set(times.map(Number).filter(Number.isFinite))).sort((a, b) => a - b);
+    const gaps = sorted.slice(1).map((value, index) => value - sorted[index]).filter(value => value > 0).sort((a, b) => a - b);
+    return gaps.length ? gaps[Math.floor(gaps.length / 2)] : undefined;
+  }
+
+  function peakWindow(context, at, beforeMinutes, afterMinutes) {
+    const before = Number(beforeMinutes), after = Number(afterMinutes);
+    if (beforeMinutes === "" || afterMinutes === "" || !Number.isFinite(before) || !Number.isFinite(after) || before < 0 || after < 0 || before + after <= 0) throw new Error("Задайте неотрицательное время до/после пика; окно не должно быть пустым");
+    const bounds = limitedRange(context, 0);
+    if (!Number.isFinite(at) || at < bounds.from || at > bounds.to) throw new Error("Время пика вне текущего диапазона дашборда");
+    const range = { from: Math.max(bounds.from, at - before * 60000), to: Math.min(bounds.to, at + after * 60000) };
+    if (range.to <= range.from) throw new Error("Окно пика не пересекает диапазон дашборда");
+    return range;
+  }
+
+  function recommendedPeakWindow(context, chart, series) {
+    const step = Math.max(0, Number(series.sampleIntervalMs) || 0);
+    const panel = availablePanels(context).find(panel => Number(panel.id) === Number(chart.panelId));
+    const refId = series.refId || series.frameRefId;
+    const targets = ((panel && panel.targets) || []).filter(target => !refId || target.refId === refId);
+    let lookback = 0;
+    targets.forEach(target => {
+      const type = (target.datasource || panel.datasource || {}).type;
+      if (type !== "prometheus" && type !== "loki") return;
+      const pattern = /\[((?:\d+(?:ms|[smhdwy]))+)\]/g;
+      for (const match of String(target.expr || "").matchAll(pattern)) {
+        let duration = 0;
+        for (const part of match[1].matchAll(/(\d+)(ms|[smhdwy])/g)) duration += Number(part[1]) * ({ ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000, w: 604800000, y: 31536000000 }[part[2]]);
+        lookback = Math.max(lookback, duration);
+      }
+    });
+    const beforeMinutes = Math.max(3, 2 * step / 60000, lookback / 60000);
+    const afterMinutes = Math.max(1, step / 60000);
+    return { at: Number(series.maxAt), beforeMinutes, afterMinutes, sampleIntervalMs: step || undefined, lookbackMs: lookback || undefined, range: peakWindow(context, Number(series.maxAt), beforeMinutes, afterMinutes) };
+  }
+
   function aroundTimeRange(value, context, width) {
     if (value == null || value === "") return undefined;
     const center = typeof value === "number" ? value : /^\d{13}$/.test(String(value)) ? Number(value) : Date.parse(String(value));
@@ -1288,8 +1325,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const prefix = source.type === "loki" ? "/loki/api/v1" : "/api/v1";
     const endpoint = action === "labels" ? "/labels" : `/label/${encodeURIComponent(label)}/values`;
     const response = await grafanaRequest(`/api/datasources/proxy/uid/${encodeURIComponent(source.uid)}${prefix}${endpoint}?${params}`, Object.assign({}, options, { timeoutMs: Math.min(queryTimeoutMs(settings) || 10000, 10000) }));
-    if (response.status === "error" || !Array.isArray(response.data)) throw new Error(response.error || "Datasource вернул некорректную схему");
-    const items = response.data.filter(item => typeof item === "string" && (!match || item.toLowerCase().includes(match.toLowerCase())));
+    const data = response.status === "success" && response.data == null ? [] : response.data;
+    if (response.status === "error" || !Array.isArray(data)) throw new Error(response.error || "Datasource вернул некорректную схему");
+    const items = data.filter(item => typeof item === "string" && (!match || item.toLowerCase().includes(match.toLowerCase())));
     return sanitizeForAI({ kind: "schema", datasource: source, action, label, total: items.length, truncated: items.length > 100, items: items.slice(0, 100), range: { from: new Date(range.from).toISOString(), to: new Date(range.to).toISOString() } });
   }
 
@@ -2234,10 +2272,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const datasource = datasourceForLanguage(props.context, props.lang);
     const url = datasource ? exploreUrl(props.context, datasource, exploreQueryFor(props.lang, props.code)) : undefined;
     return h("div", { style: Object.assign({}, styles.codeBlock, { border: "1px solid rgba(128,128,128,.25)", borderRadius: 8, overflow: "hidden" }), className: "tech-ai-code", "data-testid": "tech-ai-code" },
-      h("div", { style: { display: "flex", gap: 6, alignItems: "center", padding: "6px 8px", background: "rgba(128,128,128,.06)" } },
-        h("span", { style: Object.assign({}, styles.context, { marginRight: "auto" }) }, (props.lang || "Запрос").toUpperCase()),
-        h("button", { type: "button", style: styles.smallButton, "data-testid": "tech-ai-copy-code", onClick: async () => { setCopyStatus(await copyText(props.code) ? "Скопировано" : "Не удалось"); clearTimeout(timer.current); timer.current = setTimeout(() => setCopyStatus(""), 1800); } }, copyStatus || "Копировать"),
-        url ? h("a", { href: url, target: "_blank", rel: "noreferrer", style: Object.assign({}, styles.smallButton, { display: "inline-flex", alignItems: "center", textDecoration: "none" }) }, "Открыть в Explore") : null
+      h("div", { "data-testid": "tech-ai-code-header", style: { display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", padding: "6px 8px", background: "rgba(128,128,128,.06)" } },
+        h("span", { style: Object.assign({}, styles.context, { marginRight: "auto", whiteSpace: "nowrap", flexShrink: 0, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" }), title: (props.lang || "Запрос").toUpperCase() }, (props.lang || "Запрос").toUpperCase()),
+        h("button", { type: "button", style: Object.assign({}, styles.smallButton, { whiteSpace: "nowrap", flexShrink: 0 }), "data-testid": "tech-ai-copy-code", onClick: async () => { setCopyStatus(await copyText(props.code) ? "Скопировано" : "Не удалось"); clearTimeout(timer.current); timer.current = setTimeout(() => setCopyStatus(""), 1800); } }, copyStatus || "Копировать"),
+        url ? h("a", { href: url, target: "_blank", rel: "noreferrer", style: Object.assign({}, styles.smallButton, { display: "inline-flex", alignItems: "center", textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }) }, "Открыть в Explore") : null
       ),
       h("pre", { style: Object.assign({}, styles.pre, { borderRadius: 0, background: "rgba(128,128,128,.06)", whiteSpace: "pre", wordBreak: "normal", overflowWrap: "normal", padding: "12px" }) }, h("code", { style: { whiteSpace: "pre", wordBreak: "normal", overflowWrap: "normal", fontSize: "inherit" } }, props.code))
     );
@@ -2955,7 +2993,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       setTab("chat");
       setInvestigationSetup({
         action,
-        rangeHours: 1,
+        rangeHours: action.peak ? 0 : 1,
+        peakBeforeMinutes: action.peak && action.peak.beforeMinutes,
+        peakAfterMinutes: action.peak && action.peak.afterMinutes,
         maxPanels: Math.min(3, Math.max(1, selectedPanelIds.length)),
         maxTargets: 2,
         totalTimeoutSeconds: 45,
@@ -2971,8 +3011,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     function startInvestigation() {
       const setup = investigationSetup;
       if (!setup) return;
+      let timeRange = setup.action.timeRange;
+      try {
+        if (setup.action.peak) timeRange = peakWindow(approvedPeakContext(), setup.action.peak.at, setup.peakBeforeMinutes, setup.peakAfterMinutes);
+      } catch (reason) { setError(formatError(reason)); return; }
       setInvestigationSetup(undefined);
       send(setup.action.prompt, Object.assign({}, setup.action, {
+        timeRange,
         queries: setup.allowQueries,
         schema: setup.allowQueries && setup.allowSchema,
         includeAnnotations: setup.includeAnnotations,
@@ -2990,10 +3035,15 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       }));
     }
 
+    function approvedPeakContext() {
+      const current = selectContextPanels(withPageState(context), selectedPanelIds);
+      return Object.assign({}, current, { timeRange: limitedRange(current, settings.aiQueryMaxRangeHours) });
+    }
+
     function investigatePeak(chart, series) {
       try {
-        const range = aroundTimeRange(Number(series.maxAt), withPageState(context), 4);
-        openInvestigation({ investigation: true, timeRange: range, prompt: `Проверь пик панели #${chart.panelId} «${chart.title}», ряд «${series.name}»: максимум ${series.max} в ${new Date(series.maxAt).toISOString()}. Проверь доступные логи/трейсы в подтверждённом узком периоде. Отдели факты от гипотез.` });
+        const peak = recommendedPeakWindow(approvedPeakContext(), chart, series);
+        openInvestigation({ investigation: true, peak, timeRange: peak.range, prompt: `Проверь пик панели #${chart.panelId} «${chart.title}», ряд «${series.name}»: максимум ${series.max} в ${new Date(series.maxAt).toISOString()}. Проверь доступные логи/трейсы в подтверждённом периоде timeRange. Отдели факты от гипотез.` });
       } catch (reason) { setError(formatError(reason)); }
     }
 
@@ -3345,6 +3395,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       : withQueries > maxDataPanels ? ` · данные запросим для первых ${maxDataPanels} из ${withQueries} (лимит в настройках)` : "";
     let investigationContext = settings && context ? selectContextPanels(withPageState(context), selectedPanelIds) : context;
     if (investigationSetup && investigationSetup.action.timeRange) investigationContext = Object.assign({}, investigationContext, { timeRange: investigationSetup.action.timeRange });
+    let peakRangeError;
+    if (investigationSetup && investigationSetup.action.peak) {
+      try { investigationContext = Object.assign({}, investigationContext, { timeRange: peakWindow(approvedPeakContext(), investigationSetup.action.peak.at, investigationSetup.peakBeforeMinutes, investigationSetup.peakAfterMinutes) }); }
+      catch (reason) { peakRangeError = formatError(reason); }
+    }
     const investigationStats = investigationSetup && settings ? investigationEstimate(settings, investigationContext, investigationSetup) : undefined;
     const filesOn = Boolean(settings && settings.fileUploadsEnabled !== false);
     const imageToTextOn = attachmentTools.imageToTextAllowed(settings);
@@ -3406,7 +3461,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         h("strong", null, investigationSetup.comparePeriods ? "Сравнение периодов" : "Параметры расследования"),
         h("div", { style: styles.context }, "Повторные запросы к datasource выполнятся только после подтверждения."),
         h("div", { className: "tech-ai-form-grid" },
-        h("label", { style: styles.field },
+        investigationSetup.action.peak ? h(React.Fragment, null,
+          h("label", { style: styles.field }, h("span", null, "До пика, минут"), h("input", { style: styles.input, type: "number", min: 0, step: "any", value: investigationSetup.peakBeforeMinutes, "data-testid": "tech-ai-peak-before", onChange: event => setInvestigationSetup(Object.assign({}, investigationSetup, { peakBeforeMinutes: event.target.value })) })),
+          h("label", { style: styles.field }, h("span", null, "После пика, минут"), h("input", { style: styles.input, type: "number", min: 0, step: "any", value: investigationSetup.peakAfterMinutes, "data-testid": "tech-ai-peak-after", onChange: event => setInvestigationSetup(Object.assign({}, investigationSetup, { peakAfterMinutes: event.target.value })) }))
+        ) : h("label", { style: styles.field },
           h("span", null, "Диапазон данных"),
           h("select", { style: styles.input, value: investigationSetup.rangeHours, onChange: (event) => setInvestigationSetup(Object.assign({}, investigationSetup, { rangeHours: Number(event.target.value) })) },
             h("option", { value: 1 }, "Последний 1 час"),
@@ -3421,6 +3479,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         ),
         h("label", { style: styles.attachment }, h("input", { type: "checkbox", checked: investigationSetup.collectPanelData, disabled: settings.includePanelData === false, onChange: (event) => setInvestigationSetup(Object.assign({}, investigationSetup, { collectPanelData: event.target.checked })) }), " Получить ограниченную выборку фактических данных"),
         settings.includePanelData === false ? h("div", { style: styles.context }, "Сбор данных отключён администратором в Configuration.") : null,
+        investigationSetup.action.peak ? h("div", { style: styles.context, role: peakRangeError ? "alert" : undefined }, peakRangeError || `Окно смещено до пика: учтены исходный шаг ${investigationSetup.action.peak.sampleIntervalMs ? (investigationSetup.action.peak.sampleIntervalMs / 60000).toFixed(2) + " мин" : "неизвестен (старый снимок)"}${investigationSetup.action.peak.lookbackMs ? ", lookback запроса " + (investigationSetup.action.peak.lookbackMs / 60000).toFixed(2) + " мин" : ""}. Можно изменить окно; фактический период ограничен дашбордом и лимитом диапазона.`) : null,
         h("label", { style: styles.attachment }, h("input", { type: "checkbox", checked: investigationSetup.comparePeriods, disabled: !investigationSetup.collectPanelData, onChange: (event) => setInvestigationSetup(Object.assign({}, investigationSetup, { comparePeriods: event.target.checked })) }), " Сравнить с предыдущим периодом той же длительности (вдвое больше запросов)"),
         h("label", { style: styles.attachment }, h("input", { type: "checkbox", "data-testid": "tech-ai-allow-queries", checked: investigationSetup.allowQueries, onChange: (event) => setInvestigationSetup(Object.assign({}, investigationSetup, { allowQueries: event.target.checked })) }), " Разрешить модели дополнительные read-only запросы"),
         investigationSetup.allowQueries && settings.schemaDiscoveryEnabled !== false ? h("label", { style: styles.attachment }, h("input", { type: "checkbox", "data-testid": "tech-ai-allow-schema", checked: investigationSetup.allowSchema, onChange: event => setInvestigationSetup(Object.assign({}, investigationSetup, { allowSchema: event.target.checked })) }), " Разведка метрик и labels Prometheus/Loki (тот же лимит запросов)") : null,
@@ -3432,7 +3491,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           ? `Будет: ${investigationStats.datasourceRequests * (investigationSetup.comparePeriods ? 2 : 1)} HTTP-запросов к datasource, до ${investigationStats.targetQueries * (investigationSetup.comparePeriods ? 2 : 1)} запросов панелей; фактический диапазон ${new Date(investigationStats.from).toLocaleString()} — ${new Date(investigationStats.to).toLocaleString()}.` + (investigationSetup.comparePeriods ? ` Предыдущий период: ${new Date(investigationStats.from - (investigationStats.to - investigationStats.from)).toLocaleString()} — ${new Date(investigationStats.from).toLocaleString()}.` : "")
           : investigationSetup.allowQueries ? "Начальная выборка не запрашивается. Модель сможет выполнить дополнительные read-only запросы в настроенных лимитах." : "Повторных запросов не будет: в модель уйдут только структура дашборда и тексты запросов."),
         h("div", { style: styles.quickActions },
-          h("button", { type: "button", style: styles.button, disabled: busy, onClick: startInvestigation }, "Начать расследование"),
+          h("button", { type: "button", style: styles.button, disabled: busy || Boolean(peakRangeError), onClick: startInvestigation }, "Начать расследование"),
           h("button", { type: "button", style: styles.smallButton, disabled: busy, onClick: () => setInvestigationSetup(undefined) }, "Отмена")
         )
       ) : null
@@ -4191,7 +4250,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
 
   return {
     plugin,
-    __features: { aroundTimeRange, grafanaRequest, executeSchemaTool, executeQueryTool, parseExplorePanes, mergeExtensionQueries, loadContext, validateDashboardProposal, loadInvestigationEvents, createDashboardAnnotation, capturePanelCanvases, ProposalView },
+    __features: { sourceIntervalMs, peakWindow, recommendedPeakWindow, aroundTimeRange, grafanaRequest, executeSchemaTool, executeQueryTool, parseExplorePanes, mergeExtensionQueries, loadContext, validateDashboardProposal, loadInvestigationEvents, createDashboardAnnotation, capturePanelCanvases, ProposalView },
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
 __test: { limitAnswerCharts, panelUnit, saveHistory, chartsForContext, chartTime, fallbackMarkdown, markdownHtml, linkPanelTitles, sparkPoints, pickAnswerCharts, formatChartValue, summarizeSeries, findPanelElement, contextSummary, errorPresentation, presentationCss, loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
   };

@@ -63,6 +63,11 @@ const answer = '## Краткий вывод\n\nДашборд помогает 
     for (const viewport of [{ width: 1280, height: 720 }, { width: 1280, height: 650 }, { width: 360, height: 740 }]) {
       await page.setViewport(viewport);
       const state = await layout(); assert.ok(state.inside && state.scroll && state.codeScroll, JSON.stringify({ viewport, state }));
+      const header = await page.$eval('[data-testid="tech-ai-code-header"]', node => {
+        const bounds = node.getBoundingClientRect();
+        return [...node.children].every(child => { const box = child.getBoundingClientRect(), style = getComputedStyle(child); return style.whiteSpace === 'nowrap' && box.left >= bounds.left && box.right <= bounds.right + 1; });
+      });
+      assert.ok(header, 'Code header buttons must stay whole and inside the block');
     }
     await page.setViewport({ width: 1280, height: 720 });
     await page.$eval('[data-testid="tech-ai-history"]', node => { node.scrollTop = 0; });
