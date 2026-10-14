@@ -32,7 +32,7 @@ const assert = require('node:assert/strict');
       if (!changed.ok) throw new Error(`Plugin setup failed: ${changed.status}`);
       return { enabled: original.enabled, pinned: original.pinned, jsonData: original.jsonData };
     });
-    await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/d/tech/tech-stand?from=now-6h&to=now', { waitUntil: 'domcontentloaded' });
+    await page.goto('http://tech-ai-grafana-test:3000/crf/dashboard/d/tech/tech-stand?from=now-6h&to=now', { waitUntil: 'networkidle2' });
     await page.waitForSelector('#tech-ai-assistant-launcher', { visible: true });
     await page.click('#tech-ai-assistant-launcher');
     await page.waitForSelector('#tech-ai-assistant-drawer textarea:not([disabled])', { visible: true });

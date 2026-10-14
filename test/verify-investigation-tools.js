@@ -53,8 +53,7 @@ const puppeteer = require('puppeteer');
   if (!chatSelected) throw new Error('Investigation did not switch back to Chat');
   await page.evaluate(() => {
     const drawer = document.querySelector('#tech-ai-assistant-drawer');
-    const checkboxes = [...drawer.querySelectorAll('[data-testid="tech-ai-investigation-setup"] input[type="checkbox"]')];
-    const allowQueries = checkboxes[checkboxes.length - 1];
+    const allowQueries = drawer.querySelector('[data-testid="tech-ai-allow-queries"]');
     if (allowQueries && !allowQueries.checked) allowQueries.click();
     [...drawer.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Начать расследование').click();
   });

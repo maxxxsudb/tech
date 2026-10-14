@@ -36,5 +36,17 @@
     });
     return result;
   }
-  return { expression, targetId, diffLines, mergeSelectedTargets };
+  function diffTargetsList(previous, current) {
+    previous = previous || [];
+    current = current || [];
+    const ids = new Set(previous.map(targetId).concat(current.map(targetId)));
+    return Array.from(ids).flatMap(refId => {
+      const before = previous.find((target, index) => targetId(target, index) === refId);
+      const after = current.find((target, index) => targetId(target, index) === refId);
+      if (JSON.stringify(before) === JSON.stringify(after)) return [];
+      const changedExpression = expression(before) !== expression(after);
+      return [{ refId, before: changedExpression ? expression(before) : JSON.stringify(before || {}), after: changedExpression ? expression(after) : JSON.stringify(after || {}) }];
+    });
+  }
+  return { expression, targetId, diffLines, mergeSelectedTargets, diffTargetsList };
 });
