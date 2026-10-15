@@ -1,0 +1,5 @@
+env:
+  - name: GF_PLUGINS_PREINSTALL_SYNC
+    value: "tech-ai-assistant-app@0.9.3@https://raw.githubusercontent.com/maxxxsudb/tech/codex/image-to-text-setting/output/tech-ai-assistant-app-0.9.3.zip"
+  - name: GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS
+    value: "tech-ai-assistant-app"
