@@ -1,8 +1,8 @@
-define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachments", "./conversation", "./query-tools"], function (grafanaData, grafanaRuntime, React, ReactDOM, attachmentTools, conversationTools, queryTools) {
+define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachments", "./conversation", "./query-tools", "react-dom/client"], function (grafanaData, grafanaRuntime, React, ReactDOM, attachmentTools, conversationTools, queryTools, ReactDOMClient) {
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.9.2";
+  const PLUGIN_VERSION = "0.9.3";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -4173,15 +4173,15 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     return grafanaData.ThemeContext && theme ? h(grafanaData.ThemeContext.Provider, { value: theme }, element) : element;
   }
 
-  // React 18 отдаёт createRoot из "react-dom"; в старых версиях есть только render. Если ни того, ни другого нет,
-  // кнопка открывает штатный extension sidebar Grafana.
+  // React 19 больше не экспортирует createRoot из react-dom.
   function canMountReact() {
-    return Boolean(ReactDOM && (typeof ReactDOM.createRoot === "function" || typeof ReactDOM.render === "function"));
+    return Boolean((ReactDOMClient && typeof ReactDOMClient.createRoot === "function") || (ReactDOM && (typeof ReactDOM.createRoot === "function" || typeof ReactDOM.render === "function")));
   }
 
   function mountReact(container, element) {
-    if (typeof ReactDOM.createRoot === "function") {
-      const root = ReactDOM.createRoot(container);
+    const client = ReactDOMClient && typeof ReactDOMClient.createRoot === "function" ? ReactDOMClient : ReactDOM;
+    if (client && typeof client.createRoot === "function") {
+      const root = client.createRoot(container);
       root.render(element);
       return () => root.unmount();
     }
@@ -4206,10 +4206,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     "#tech-ai-assistant-drawer [data-testid=\"tech-ai-history\"] > * { flex-shrink: 0; }",
   ].join("\n");
 
-  function openDrawer() {
+  function openDrawer(initialContext) {
+    if (document.getElementById("tech-ai-assistant-drawer")) return;
     if (!canMountReact()) {
-      openAssistant();
-      return;
+      throw new Error("Не удалось открыть AI Assistant: Grafana не предоставила React DOM renderer. Обновите страницу и проверьте загрузку плагина.");
     }
     const colors = themeColors();
     const drawer = document.createElement("aside");
@@ -4288,7 +4288,12 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       if (event.key === "Escape") closeDrawer();
     });
     document.body.appendChild(drawer);
-    drawer.techAiUnmount = mountReact(content, themed(h(Assistant)));
+    try {
+      drawer.techAiUnmount = mountReact(content, themed(h(Assistant, { initialContext })));
+    } catch (error) {
+      drawer.remove();
+      throw error;
+    }
   }
 
   async function installLauncher() {
@@ -4325,7 +4330,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     });
     button.addEventListener("click", () => {
       if (document.getElementById("tech-ai-assistant-drawer")) closeDrawer();
-      else openDrawer();
+      else openAssistant();
     });
     document.body.appendChild(button);
   }
@@ -4335,15 +4340,13 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     else installLauncher();
   }
 
-  class OpenExtensionSidebarEvent extends grafanaData.BusEventWithPayload {}
-  OpenExtensionSidebarEvent.type = "open-extension-sidebar";
-
   function openAssistant(initialContext) {
-    grafanaRuntime.getAppEvents().publish(new OpenExtensionSidebarEvent({
-      pluginId: PLUGIN_ID,
-      componentTitle: COMPONENT_TITLE,
-      props: { initialContext, initialAutoSend: false },
-    }));
+    try {
+      openDrawer(initialContext);
+    } catch (error) {
+      console.error("Tech AI Assistant: ошибка открытия", error);
+      window.alert(error.message || "Не удалось открыть AI Assistant");
+    }
   }
 
   const plugin = new grafanaData.AppPlugin()
@@ -4382,6 +4385,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
 
   return {
     plugin,
+    __launcher: { canMountReact, mountReact, openDrawer, openAssistant, closeDrawer },
     __context: { contextDescriptor, contextDifference, contextRangeLabel, sentContextDetails, sentContextCaption },
     __features: { sourceIntervalMs, peakWindow, recommendedPeakWindow, aroundTimeRange, grafanaRequest, executeSchemaTool, executeQueryTool, parseExplorePanes, mergeExtensionQueries, loadContext, validateDashboardProposal, loadInvestigationEvents, createDashboardAnnotation, capturePanelCanvases, ProposalView },
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
