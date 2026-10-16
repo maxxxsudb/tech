@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana-plugin-tools
+spec:
+  selector:
+    matchLabels:
+      app: grafana-plugin-tools
+  template:
+    metadata:
+      labels:
+        app: grafana-plugin-tools
+    spec:
+      containers:
+        - name: tools
+          image: grafana/grafana:13.0.2
+          command: ["/bin/sh", "-c", "while :; do sleep 3600; done"]
+          volumeMounts:
+            - name: plugins
+              mountPath: /var/lib/grafana/plugins
+      volumes:
+        - name: plugins
+          persistentVolumeClaim:
+            claimName: grafana-plugin

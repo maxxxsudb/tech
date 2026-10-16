@@ -1,0 +1,13 @@
+{
+  "name": "tech-ai-assistant-build",
+  "private": true,
+  "version": "0.9.4",
+  "engines": { "node": ">=22" },
+  "scripts": { "protect": "node scripts/protect.cjs", "test": "node --test test/*.test.js" },
+  "devDependencies": {
+    "acorn": "8.15.0",
+    "javascript-obfuscator": "5.9.0",
+    "puppeteer-core": "24.24.1",
+    "terser": "5.51.2"
+  }
+}
