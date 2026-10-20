@@ -9,7 +9,7 @@ Module._extensions['.js'] = (module, filename) => {
   if (path.dirname(filename) === source) {
     const originalDefine = global.define;
     if (path.basename(filename) === 'module.js' && originalDefine) {
-      const originalDeps = ['@grafana/data', '@grafana/runtime', 'react', 'react-dom', './attachments', './conversation', './query-tools', 'react-dom/client'];
+      const originalDeps = ['@grafana/data', '@grafana/runtime', 'react', 'react-dom', './attachments', './conversation', './query-tools', 'react-dom/client', './alerting'];
       global.define = (deps, factory) => originalDefine(originalDeps, (...args) => factory(...deps.map(dependency => args[originalDeps.indexOf(dependency)])));
     }
     try { return module._compile(fs.readFileSync(path.join(target, path.basename(filename)), 'utf8'), filename); }

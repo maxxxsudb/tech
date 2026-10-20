@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 let factory, Assistant, state = [], refs = [], stateIndex, refIndex;
 global.define = (_deps, fn) => { factory = fn; };
+delete require.cache[require.resolve('../plugin/module.js')];
 require("../plugin/module.js");
 delete global.define;
 class AppPlugin {
@@ -19,7 +20,7 @@ const React = {
   useEffect() {},
 };
 const runtime = { config: { appSubUrl: "/crf/dashboard", bootData: { user: { orgId: 1, orgRole: "Admin" } } } };
-const moduleApi = factory({ AppPlugin, BusEventWithPayload: class {} }, runtime, React, {}, require("../plugin/attachments.js"), require("../plugin/conversation.js"), require("../plugin/query-tools.js"));
+const moduleApi = factory({ AppPlugin, BusEventWithPayload: class {} }, runtime, React, {}, require("../plugin/attachments.js"), require("../plugin/conversation.js"), require("../plugin/query-tools.js"), {}, require("../plugin/alerting.js"));
 global.location = { search: "", href: "http://localhost/crf/dashboard/d/tech/tech-stand" };
 global.window = { location: global.location };
 const originalFetch = global.fetch;
@@ -67,6 +68,13 @@ test("ошибка до отправки вопроса возвращает т�
     await waitDone();
     assert.equal(state[5], draft || "Test");
   }
+});
+
+test("подготовка алерта открывает builder без модели, datasource и записи", () => {
+  reset(); state[1].panels = [{ id: 1, title: "SQL", datasource: { uid: "pg", type: "grafana-postgresql-datasource" }, targets: [{ refId: "A", rawSql: "SELECT 1" }] }]; state[15] = [1];
+  let calls = 0; global.fetch = async () => { calls++; return response("unexpected"); };
+  button(render(), "Подготовить алерт").props.onClick();
+  assert.ok(nodes(render()).some(node => node.type === moduleApi.__features.AlertDraftEditor)); assert.equal(calls, 0); assert.equal(state[3].length, 0);
 });
 
 test("действие одной панели открывает выбор в чате вместо ошибки и запросов", () => {
@@ -258,6 +266,32 @@ test("готовый снимок используется без запросо
   assert.match(state[7], /устарел/);
 });
 
+test("Продолжить сохраняет только актуальный снимок и никогда не запрашивает datasource", async () => {
+  for (const mode of ['current', 'stale', 'period', 'panels']) {
+    reset([], { includePanelData: true }); fixtureSnapshot(mode === 'stale');
+    state[3] = [{ role: 'user', content: 'Question' }, { role: 'assistant', content: 'Partial answer' }];
+    if (mode === 'period') state[1].timeRange = { from: 'now-24h', to: 'now' };
+    if (mode === 'panels') state[15] = [2];
+    const sent = [];
+    global.fetch = async (url, options) => { assert.ok(!String(url).includes('/api/ds/query')); sent.push(JSON.parse(options.body)); return response('Continued'); };
+    button(render(), 'Продолжить').props.onClick(); await waitDone();
+    assert.equal(sent.length, 1);
+    const requestContext = JSON.parse(sent[0].messages[0].content.split('Текущий контекст Grafana:\n')[1]);
+    assert.equal(Array.isArray(requestContext.panelData), mode === 'current', mode);
+  }
+});
+
+test("разбор алерта отправляет снимок правила модели без запросов PostgreSQL", async () => {
+  reset([], { includePanelData: true });
+  state[1] = { isAlerting: true, dashboardTitle: 'SQL alert', timeRange: { from: 1790000000000, to: 1790000060000 }, panels: [], alerting: { mode: 'rule', ruleUid: 'r1', rule: { uid: 'r1', title: 'SQL alert', data: [{ model: { rawSql: 'select count(*) from failures' } }] }, readStatus: {}, loadedAt: new Date().toISOString() } };
+  const sent = [];
+  global.fetch = async (url, options) => { assert.ok(!String(url).includes('/api/ds/query')); sent.push(JSON.parse(options.body)); return response('Rule explanation'); };
+  const card = nodes(render()).find(node => node.type === moduleApi.__features.AlertContextCard);
+  card.props.onExplain(); await waitDone();
+  assert.equal(sent.length, 1); assert.ok(JSON.stringify(sent).includes('select count(*) from failures'));
+  assert.equal(state[3].length, 2);
+});
+
 test("поиск панелей не меняет их выбор", () => {
   reset();
   state[1].panels = [{ id: 1, title: "CPU", row: "Servers" }, { id: 2, title: "Memory" }]; state[15] = [1, 2];
@@ -335,6 +369,38 @@ test("закрытый диалог не получает поздний ста�
   button(render(), "Новый диалог").props.onClick();
   resolve(new Response('{"id":1}')); await settle(); await settle();
   assert.equal(state[27], undefined); assert.equal(state[28], ""); assert.equal(state[6], false);
+});
+
+test("командный SQL-сценарий использует существующее подтверждение расследования без скрытых запросов", () => {
+  reset([], { customPrompts: [{ label: "Проверка заказов", prompt: "Проверь SQL заказов", needsPanel: true, investigation: true }] });
+  state[1].panels = [{ id: 1, title: "Orders", datasource: { uid: "pg", type: "grafana-postgresql-datasource" }, targets: [{ refId: "A", rawSql: "SELECT 1" }] }]; state[15] = [1];
+  let calls = 0; global.fetch = async () => { calls++; return response("unexpected"); };
+  button(render(), "Проверка заказов").props.onClick(); assert.equal(calls, 0); assert.equal(state[13].action.prompt, "Проверь SQL заказов"); assert.equal(state[13].allowQueries, false);
+});
+
+test("UI плана не отправляет datasource до выбора; stop очищает ожидание без запроса", async () => {
+  for (const stop of [false, true]) {
+    reset([], { toolsMode: "text" });
+    state[1].panels = [{ id: 1, title: "CPU", datasource: { uid: "prom", type: "prometheus" }, targets: [{ refId: "A", expr: "up" }] }]; state[15] = [1];
+    state[1].timeRange = { from: Date.now() - 3600000, to: Date.now() };
+    state[13] = { action: { prompt: "Investigate" }, allowQueries: true, approveToolPlans: true, collectPanelData: false, totalTimeoutSeconds: 45 };
+    let posts = 0, queries = 0;
+    global.fetch = async (url) => {
+      if (String(url).includes("/api/ds/query")) { queries++; return new Response(JSON.stringify({ results: { AI: { frames: [] } } })); }
+      return response(posts++ ? "Done" : '```grafana-query\n{"datasourceUid":"prom","query":{"expr":"up"},"reason":"check"}\n```');
+    };
+    button(render(), "Начать расследование").props.onClick();
+    for (let i = 0; i < 100 && !nodes(render()).some(node => node.props["data-testid"] === "tech-ai-tool-plan"); i++) await settle();
+    assert.ok(byId(render(), "tech-ai-tool-plan")); assert.equal(queries, 0);
+    assert.equal(byId(render(), "tech-ai-tool-approve").props.disabled, true);
+    if (stop) button(render(), "Остановить расследование").props.onClick();
+    else {
+      const plan = byId(render(), "tech-ai-tool-plan"); nodes(plan).find(node => node.type === "input" && node.props.type === "checkbox").props.onChange({ target: { checked: true } });
+      byId(render(), "tech-ai-tool-approve").props.onClick();
+    }
+    await waitDone(); assert.equal(queries, stop ? 0 : 1);
+    assert.equal(nodes(render()).some(node => node.props["data-testid"] === "tech-ai-tool-plan"), false);
+  }
 });
 
 test("редактирование окна пика не запрашивает данные, неверное окно блокирует запуск", async () => {

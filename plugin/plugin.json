@@ -10,8 +10,8 @@
     "author": { "name": "Tech" },
     "keywords": ["ai", "assistant", "dashboard", "promql", "logql"],
     "logos": { "small": "logo.svg", "large": "logo.svg" },
-    "version": "0.9.4",
-    "updated": "2026-10-15"
+    "version": "0.9.9",
+    "updated": "2026-10-20"
   },
   "includes": [
     {

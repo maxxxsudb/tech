@@ -1,9 +1,9 @@
 {
   "name": "tech-ai-assistant-build",
   "private": true,
-  "version": "0.9.4",
+  "version": "0.9.9",
   "engines": { "node": ">=22" },
-  "scripts": { "protect": "node scripts/protect.cjs", "test": "node --test test/*.test.js" },
+  "scripts": { "protect": "node scripts/protect.cjs", "test": "node --test test/*.test.js", "check": "node scripts/check-release.cjs" },
   "devDependencies": {
     "acorn": "8.15.0",
     "javascript-obfuscator": "5.9.0",

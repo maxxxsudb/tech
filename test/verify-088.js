@@ -53,15 +53,15 @@ function contextOf(body) {
     const dashboardUrl = `${root}/d/${uid}/ui-test?from=${from}&to=${to}&timezone=utc`;
     const click = async label => page.evaluate(label => { const button = [...document.querySelectorAll('#tech-ai-assistant-drawer button')].find(node => node.textContent.trim() === label); if (!button) throw new Error(`Missing ${label}`); button.click(); }, label);
     const ask = async (text, mode) => {
-      await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
+      await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] [data-testid="tech-ai-composer"] textarea:not([disabled])');
       await page.select('[data-testid="tech-ai-composer-data-mode"]', mode);
-      await page.type('#tech-ai-assistant-drawer textarea', text);
+      await page.type('#tech-ai-assistant-drawer [data-testid="tech-ai-composer"] textarea', text);
       await click('Отправить'); await page.waitForSelector('[data-testid="tech-ai-send-preview"]');
       await page.$eval('[data-testid="tech-ai-send-preview"] button', node => node.click());
-      await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
+      await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] [data-testid="tech-ai-composer"] textarea:not([disabled])');
     };
     await page.goto(dashboardUrl, { waitUntil: 'networkidle2' }); await page.waitForSelector('#tech-ai-assistant-launcher'); await page.click('#tech-ai-assistant-launcher');
-    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
+    await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] [data-testid="tech-ai-composer"] textarea:not([disabled])');
     stage = 'data modes and search';
     await ask('Explain CPU', 'sample'); assert.ok(contextOf(requests.at(-1)).panelData);
     assert.match(await page.$eval('[data-testid="tech-ai-sent-context"] summary', node => node.textContent), /Данные 1\/1/);
@@ -82,16 +82,16 @@ function contextOf(body) {
     await ask('Look at the picture', 'structure'); await page.waitForSelector('[data-testid="tech-ai-error"]');
     const image = requests.at(-1).messages.at(-1).content.find(part => part.type === 'image_url').image_url.url;
     assert.equal(await page.evaluate(() => window.captureCalls), 1);
-    await click('Повторить'); await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] textarea:not([disabled])');
+    await click('Повторить'); await page.waitForSelector('#tech-ai-assistant-drawer .tech-ai-root[data-busy="false"] [data-testid="tech-ai-composer"] textarea:not([disabled])');
     assert.equal(requests.at(-1).messages.at(-1).content.find(part => part.type === 'image_url').image_url.url, image);
     assert.equal(await page.evaluate(() => window.captureCalls), 1);
     assert.equal(await page.$eval('[data-testid="tech-ai-screenshot-toggle"]', node => node.getAttribute('aria-pressed')), 'false');
     assert.ok(!(await page.evaluate(() => JSON.stringify(sessionStorage))).includes('data:image/jpeg;base64'));
     stage = 'responsive controls and manual resize';
-    await page.evaluate(() => { const area = document.querySelector('#tech-ai-assistant-drawer textarea'); area.value = ''; area.dispatchEvent(new Event('input', { bubbles: true })); });
-    const area = await page.$('#tech-ai-assistant-drawer textarea'); const box = await area.boundingBox();
+    await page.evaluate(() => { const area = document.querySelector('#tech-ai-assistant-drawer [data-testid="tech-ai-composer"] textarea'); area.value = ''; area.dispatchEvent(new Event('input', { bubbles: true })); });
+    const area = await page.$('#tech-ai-assistant-drawer [data-testid="tech-ai-composer"] textarea'); const box = await area.boundingBox();
     await page.mouse.move(box.x + box.width - 4, box.y + box.height - 4); await page.mouse.down(); await page.mouse.move(box.x + box.width - 4, box.y + box.height + 55, { steps: 8 }); await page.mouse.up();
-    const resized = await area.evaluate(node => node.getBoundingClientRect().height); await page.type('#tech-ai-assistant-drawer textarea', 'Text after resize');
+    const resized = await area.evaluate(node => node.getBoundingClientRect().height); await page.type('#tech-ai-assistant-drawer [data-testid="tech-ai-composer"] textarea', 'Text after resize');
     assert.ok(await area.evaluate((node, height) => node.getBoundingClientRect().height >= height - 2, resized));
     for (const width of [1280, 380, 360]) {
       await page.setViewport({ width, height: width === 1280 ? 650 : 740 });
@@ -119,7 +119,7 @@ function contextOf(body) {
     await page.waitForSelector('[data-testid="tech-ai-composer"]');
     assert.ok(await page.$eval('[data-testid="tech-ai-composer"]', node => { const box = node.getBoundingClientRect(); return box.right <= innerWidth && box.bottom <= innerHeight; }));
     await page.screenshot({ path: '/test-results/assistant-088-page.png' });
-    stage = 'native panel modal';
+    stage = 'panel menu drawer';
     await page.goto(dashboardUrl, { waitUntil: 'networkidle2' });
     await page.waitForSelector('[data-testid="data-testid Panel header CPU"]');
     await page.hover('[data-testid="data-testid Panel header CPU"]');
@@ -140,11 +140,11 @@ function contextOf(body) {
     }
     await page.waitForFunction(() => [...document.querySelectorAll('a,button,[role="menuitem"]')].some(node => node.textContent.trim() === 'Спросить AI'));
     await page.evaluate(() => [...document.querySelectorAll('a,button,[role="menuitem"]')].find(node => node.textContent.trim() === 'Спросить AI').click());
-    await page.waitForSelector('[role="dialog"] [data-testid="tech-ai-composer"]');
-    assert.ok(await page.$eval('[role="dialog"] [data-testid="tech-ai-composer"]', node => { const box = node.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight; }));
+    await page.waitForSelector('#tech-ai-assistant-drawer [data-testid="tech-ai-composer"]');
+    assert.ok(await page.$eval('#tech-ai-assistant-drawer [data-testid="tech-ai-composer"]', node => { const box = node.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight; }));
     await page.screenshot({ path: '/test-results/assistant-088-modal.png' });
     assert.ok(!errors.length, errors.join('\n'));
-    console.log('release-088-test=ok; composer data modes, no hidden queries, panel filter, screenshot retry/single use/no history base64, resize, desktop/narrow/mobile, grouped configuration/sticky save, full page and native panel modal; real Grafana, mock model/data/capture');
+    console.log('release-088-test=ok; composer data modes, no hidden queries, panel filter, screenshot retry/single use/no history base64, resize, desktop/narrow/mobile, grouped configuration/sticky save, full page and common panel drawer; real Grafana, mock model/data/capture');
   } catch (error) { console.error(`release-088-test stage=${stage}`); if (!page.isClosed()) await page.screenshot({ path: '/test-results/assistant-088-failure.png' }).catch(() => {}); throw error; }
   finally {
     try {

@@ -1,0 +1,30 @@
+name: Plugin checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Build and verify ZIP
+        id: package
+        shell: pwsh
+        run: |
+          ./scripts/package.ps1
+          $manifest = Get-Content plugin/plugin.json -Raw | ConvertFrom-Json
+          "archive=output/$($manifest.id)-$($manifest.info.version).zip" >> $env:GITHUB_OUTPUT
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-zip
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error

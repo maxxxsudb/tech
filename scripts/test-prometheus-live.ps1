@@ -8,7 +8,7 @@ function Invoke-Docker {
     if ($LASTEXITCODE -ne 0) { throw ('Docker failed: ' + ($Arguments -join ' ')) }
 }
 $grafana = & docker inspect tech-ai-grafana-test --format '{{json .}}' | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or $grafana.Config.Image -ne 'grafana/grafana:13.0.2' -or $grafana.State.Running) { throw 'Requires the existing stopped test Grafana 13.0.2 container.' }
+if ($LASTEXITCODE -ne 0 -or $grafana.Config.Image -ne 'grafana/grafana:13.2.2' -or $grafana.State.Running) { throw 'Requires the existing stopped test Grafana 13.2.2 container with Node.js for the exporter.' }
 & docker inspect $container *> $null
 if ($LASTEXITCODE -eq 0) { throw 'Temporary container already exists; refusing to overwrite it.' }
 & docker image inspect $image *> $null

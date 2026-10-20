@@ -3,7 +3,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const acorn = require('acorn');
-const files = ['attachments.js', 'conversation.js', 'query-tools.js', 'module.js'];
+const files = ['attachments.js', 'conversation.js', 'query-tools.js', 'alerting.js', 'module.js'];
 function load(directory) {
   const modules = {}, dependencies = {}, records = [];
   class AppPlugin {}

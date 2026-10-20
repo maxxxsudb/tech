@@ -9,7 +9,7 @@ function bundle(code, directory) {
   deps.elements.forEach((dependency, index) => {
     if (!dependency.value.startsWith('./')) { external.push(dependency.value); parameters.push(factory.params[index].name); return; }
     const filename = dependency.value.slice(2) + '.js';
-    if (!['attachments.js', 'conversation.js', 'query-tools.js'].includes(filename)) throw new Error('Review new private dependency: ' + filename);
+    if (!['attachments.js', 'conversation.js', 'query-tools.js', 'alerting.js'].includes(filename)) throw new Error('Review new private dependency: ' + filename);
     const helper = fs.readFileSync(path.join(directory, filename), 'utf8');
     const helperAst = acorn.parse(helper, { ecmaVersion: 'latest' });
     const body = helperAst.body[0].expression.arguments[0];

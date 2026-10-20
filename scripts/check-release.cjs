@@ -1,0 +1,15 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const acorn = require('acorn');
+const root = path.resolve(__dirname, '..');
+const read = file => fs.readFileSync(path.join(root, file), 'utf8');
+const manifest = JSON.parse(read('plugin/plugin.json'));
+const pkg = JSON.parse(read('package.json'));
+const lock = JSON.parse(read('package-lock.json'));
+assert.equal(manifest.info.version, pkg.version, 'Manifest/package versions differ');
+assert.equal(lock.version, pkg.version, 'Lockfile/package versions differ');
+assert.equal(lock.packages[''].version, pkg.version, 'Root lockfile version differs');
+assert.ok(read('plugin/module.js').includes(`PLUGIN_VERSION = "${pkg.version}"`), 'Module version differs');
+for (const file of fs.readdirSync(path.join(root, 'plugin')).filter(file => file.endsWith('.js'))) acorn.parse(read('plugin/' + file), { ecmaVersion: 'latest' });
+console.log(`Version ${pkg.version}; plugin syntax and release metadata: PASS`);

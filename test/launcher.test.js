@@ -28,7 +28,7 @@ test.afterEach(() => { delete global.document; delete global.window; });
 test('React 19: createRoot берётся из react-dom/client, не из legacy react-dom', () => {
   const calls = [];
   const api = setup({ createRoot() { throw new Error('Legacy export must not be used'); } }, { createRoot: container => ({ render: value => calls.push([container, value]), unmount: () => calls.push('unmount') }) });
-  assert.equal(api.dependencies.at(-1), 'react-dom/client');
+  assert.ok(api.dependencies.includes('react-dom/client'));
   assert.equal(api.canMountReact(), true);
   const unmount = api.mountReact('container', 'assistant'); unmount();
   assert.deepEqual(calls, [['container', 'assistant'], 'unmount']);
@@ -71,4 +71,15 @@ test('командная палитра и Explore открывают наш dra
     api.closeDrawer();
   }
   assert.equal(roots, 2);
+});
+
+test('меню панели открывает общий drawer и обновляет контекст уже открытого drawer', () => {
+  let roots = 0, unmounts = 0, rendered;
+  const api = setup({}, { createRoot: () => { roots++; return { render(value) { rendered = value; }, unmount() { unmounts++; } }; } });
+  api.openAssistant();
+  const context = { panelId: 7 };
+  const link = api.links.find(item => item.targets.includes('grafana/dashboard/panel/menu'));
+  link.onClick(null, { context, openModal() { throw Error('must use drawer'); } });
+  assert.equal(roots, 2); assert.equal(unmounts, 1); assert.equal(rendered.props.initialContext.panelId, 7);
+  api.closeDrawer();
 });
