@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.9.11";
+  const PLUGIN_VERSION = "0.9.12";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -1232,15 +1232,23 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   function contextDatasources(context) {
     const panels = context.panel ? [context.panel] : (context.panels || []);
     const result = new Map();
-    (context.relatedDatasources || []).forEach(source => { if (source && source.uid && source.type) result.set(source.uid, { uid: source.uid, type: source.type }); });
+    function add(datasource) {
+      const uid = typeof datasource === 'string' ? datasource : datasource?.uid;
+      if (!uid) return;
+      let type = datasource?.type || result.get(uid)?.type;
+      if (!type) {
+        try { type = grafanaRuntime.getDataSourceSrv?.()?.getInstanceSettings?.(uid)?.type; } catch (_) {}
+      }
+      if (type) result.set(uid, { uid, type });
+    }
+    (context.relatedDatasources || []).forEach(add);
     panels.forEach((panel) => {
       [panel.datasource].concat((panel.targets || []).map((target) => target.datasource)).filter(Boolean).forEach((datasource) => {
-        if (typeof datasource === "object" && datasource.uid) result.set(datasource.uid, { uid: datasource.uid, type: datasource.type });
+        add(datasource);
       });
     });
     (context.panelData || []).forEach((item) => (item.queries || []).forEach((query) => {
-      const datasource = query.datasource;
-      if (datasource && typeof datasource === "object" && datasource.uid && !result.has(datasource.uid)) result.set(datasource.uid, { uid: datasource.uid, type: datasource.type });
+      add(query.datasource);
     }));
     return result;
   }
@@ -1620,7 +1628,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       const datasource = merged.datasource || panel.datasource;
       const uid = typeof datasource === 'string' ? datasource : datasource?.uid;
       let source = sources.get(uid);
-      if (!source?.type) source = grafanaRuntime.getDataSourceSrv?.().getInstanceSettings?.(uid) || source;
+      if (!source?.type) source = grafanaRuntime.getDataSourceSrv?.()?.getInstanceSettings?.(uid) || source;
       if (source?.type === 'grafana-postgresql-datasource' || datasource?.type === 'grafana-postgresql-datasource' || Object.hasOwn(merged, 'rawSql')) {
         const checked = queryTools.boundedSql(merged.rawSql, 100);
         if (bounded) Object.assign(merged, { rawSql: checked.rawSql, rawQuery: true, editorMode: 'code' });
@@ -1696,10 +1704,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const queries = proposalSqlTargets(panel, interpolated, context, true);
     const range = limitedRange(context, settings.aiQueryMaxRangeHours);
     const results = await runDatasourceQueries(context, queries, { range, timeoutMs: Math.min(queryTimeoutMs(settings) || 10000, 10000), signal: options.signal });
-    const details = queries.map(query => {
+    const details = queries.map((query, index) => {
       const value = results[query.refId];
       const summary = value ? summarizeQueryResult(value, { rows: 3, recent: 2, series: 5 }, undefined, query) : { error: "Datasource не вернул результат запроса" };
-      return { refId: query.refId, query: omit(query, ['maxDataPoints', 'maxLines', 'limit']), error: summary.error, series: (summary.series || []).length, rows: (summary.tables || []).reduce((sum, table) => sum + (table.totalRows || 0), 0) };
+      return { refId: query.refId, query: omit(interpolated[index], ['maxDataPoints', 'maxLines', 'limit']), error: summary.error, series: (summary.series || []).length, rows: (summary.tables || []).reduce((sum, table) => sum + (table.totalRows || 0), 0) };
     });
     return { ok: !details.some(detail => detail.error), empty: details.every(detail => !detail.series && !detail.rows), details, range, checkedAt: Date.now() };
   }
@@ -3290,7 +3298,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       h("button", { type: "button", style: styles.quietButton, disabled: blocked || fields.matchers.length >= 20, onClick: () => update({ matchers: fields.matchers.concat({ name: "", value: "", isRegex: false, isEqual: true }) }) }, "Добавить label"),
       h('div', { style: styles.context }, 'Время браузера: ' + Intl.DateTimeFormat().resolvedOptions().timeZone + '. В Grafana передаётся UTC.'),
       ["startsAt", "endsAt", "comment"].map(name => h("label", { key: name, style: styles.field }, ({ startsAt: "Начало", endsAt: "Окончание", comment: "Комментарий" })[name], h("input", { style: styles.input, type: name === 'comment' ? 'text' : 'datetime-local', step: name === 'comment' ? undefined : 1, value: name === 'comment' ? fields[name] : times[name].value, disabled: blocked, 'aria-invalid': Boolean(timeErrors[name]), "data-testid": "tech-ai-silence-" + name, onChange: event => name === 'comment' ? update({ comment: event.target.value }) : update({ [name]: queryTools.localDateTimeIso(event.target.value) }, { [name]: { value: event.target.value, badInput: event.target.validity.badInput } }) }), timeErrors[name] ? h('span', { role: 'alert', 'data-testid': 'tech-ai-silence-time-error-' + name }, timeErrors[name]) : null)),
-      h('div', { style: styles.quickActions }, [1, 4, 24].map(hours => h('button', { key: hours, type: 'button', style: styles.quietButton, disabled: blocked, 'data-testid': 'tech-ai-silence-duration-' + hours, onClick: () => { const now = Date.now(); update({ startsAt: before ? fields.startsAt : new Date(now).toISOString(), endsAt: new Date(now + hours * 3600000).toISOString() }); } }, (before ? 'До: сейчас + ' : '+') + hours + ' ч'))),
+      h('div', { style: styles.quickActions }, [1, 4, 24].map(hours => h('button', { key: hours, type: 'button', style: styles.quietButton, disabled: blocked, 'data-testid': 'tech-ai-silence-duration-' + hours, onClick: () => { const now = Date.now(); update({ startsAt: before && fields.startsAt ? fields.startsAt : new Date(now).toISOString(), endsAt: new Date(now + hours * 3600000).toISOString() }); } }, (before ? 'До: сейчас + ' : '+') + hours + ' ч'))),
       h("button", { type: "button", style: styles.smallButton, disabled: blocked || invalidTime, "data-testid": "tech-ai-silence-preview", onClick: () => { if (!invalidTime) run(async signal => { setPreview(await alertingTools.previewSilence(grafanaRequest, fields, { signal })); setConfirmed(false); }); } }, "Preview затронутых алертов"),
       preview ? h("div", { "data-testid": "tech-ai-silence-impact" }, `Текущих экземпляров: ${preview.affected.length}. ${preview.limitation}`, h("details", null, h("summary", null, "Matchers и экземпляры"), h("pre", { style: styles.pre }, JSON.stringify({ before, after: preview.body, instances: preview.affected.map(item => item.labels) }, null, 2)))) : null,
       h("label", { style: styles.attachment }, h("input", { type: "checkbox", checked: confirmed, disabled: blocked, "data-testid": "tech-ai-silence-confirm", onChange: event => setConfirmed(event.target.checked) }), " Подтверждаю matchers, срок и подавление совпадающих уведомлений."),

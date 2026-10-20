@@ -106,12 +106,29 @@ try {
   }, uid);
   await page.click('[data-testid="tech-ai-alert-silences"] > summary');
   await page.click('[data-testid="tech-ai-silence-duration-1"]');
+  // A future fixture start avoids server normalization of a past timestamp.
+  await page.$eval('[data-testid="tech-ai-silence-startsAt"]', el => {
+    const at = new Date(Date.now() + 120000), pad = n => String(n).padStart(2, '0');
+    const local = `${at.getFullYear()}-${pad(at.getMonth()+1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, local); el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
   await page.$eval('[data-testid="tech-ai-silence-comment"]', el => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Temporary UI silence verification'); el.dispatchEvent(new Event('input', { bubbles: true })); });
   await page.click('[data-testid="tech-ai-silence-preview"]'); await page.waitForSelector('[data-testid="tech-ai-silence-impact"]');
   assert.equal(await page.$eval('[data-testid="tech-ai-silence-apply"]', el => el.disabled), true);
   await page.click('[data-testid="tech-ai-silence-confirm"]'); await page.click('[data-testid="tech-ai-silence-apply"]');
-  await page.waitForFunction(() => document.querySelector('[data-testid="tech-ai-silence-message"]')?.textContent.includes('подтверждён'));
+  await page.waitForFunction(() => document.querySelector('[data-testid="tech-ai-silence-message"]')?.textContent === 'Silence подтверждён API');
   const uiSilence = (await request('/api/alertmanager/grafana/api/v2/silences')).find(s => s.comment === 'Temporary UI silence verification' && s.matchers.some(m => m.value === uid)); assert.ok(uiSilence); silenceId = uiSilence.id;
+  const originalStart = await page.$eval('[data-testid="tech-ai-silence-startsAt"]', el => el.value);
+  await page.click('[data-testid="tech-ai-silence-duration-1"]');
+  assert.equal(await page.$eval('[data-testid="tech-ai-silence-startsAt"]', el => el.value), originalStart);
+  await page.$eval('[data-testid="tech-ai-silence-startsAt"]', el => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ''); el.dispatchEvent(new Event('input', { bubbles: true })); });
+  await page.waitForSelector('[data-testid="tech-ai-silence-time-error-startsAt"]');
+  await page.click('[data-testid="tech-ai-silence-duration-1"]');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="tech-ai-silence-time-error-startsAt"]') && !document.querySelector('[data-testid="tech-ai-silence-preview"]').disabled);
+  assert.ok(await page.$eval('[data-testid="tech-ai-silence-startsAt"]', el => el.value));
+  assert.equal(await page.$('[data-testid="tech-ai-silence-impact"]'), null);
+  assert.equal(await page.$eval('[data-testid="tech-ai-silence-confirm"]', el => el.checked), false);
+  check('Existing silence preset preserves a valid start and recovers an empty start without reusing preview or confirmation');
   await a.expireSilence(request, uiSilence, { confirmed: true, role: 'Admin', typedId: uiSilence.id });
   check('Real silence UI requires preview and confirmation; journal and API readback succeed');
   snapshot = await a.readManagedRule(request, namespace, uid);

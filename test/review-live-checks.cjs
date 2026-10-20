@@ -119,7 +119,7 @@ module.exports = async ({ page, api, uid, folderUid, from, to, check }) => {
     await page.$$eval('[data-testid="tech-ai-validate-proposal"]',nodes=>nodes.at(-1).click());
     await page.waitForSelector('[data-testid="tech-ai-repair-proposal"]');await page.click('[data-testid="tech-ai-repair-proposal"]');
     const repairDraft=await page.$eval('[data-testid="tech-ai-composer"] textarea',n=>n.value);
-    assert.match(repairDraft,/missing_review_column/);assert.match(repairDraft,/фактической ошибке/);assert.equal(models,2);assert.equal(writes,0);
+    assert.match(repairDraft,/missing_review_column/);assert.match(repairDraft,/фактической ошибке/);assert.doesNotMatch(repairDraft,/__tech_ai_result|LIMIT 101/);assert.equal(models,2);assert.equal(writes,0);
     check('Actual Assistant repair button prepares factual query/error draft without another model call or write');
     await page.click('[data-testid="tech-ai-composer"] button[aria-label="Отправить"]');
     await page.waitForFunction(()=>document.querySelectorAll('[data-testid="tech-ai-try-panel"]').length===3);

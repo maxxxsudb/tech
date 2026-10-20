@@ -109,6 +109,49 @@ test('preview executes bounded raw SQL with original format; apply retains full 
     assert.equal(saved[0][1].dashboard.panels[0].targets[0].rawSql,'SELECT 2');
   } finally {global.fetch=originalFetch;}
 });
+test('legacy string datasource resolves for code proposals and SELECT preview/apply while writes stay blocked',async()=>{
+  const oldFetch=global.fetch,oldSrv=runtime.getDataSourceSrv;let bodies=[];
+  runtime.getDataSourceSrv=()=>({getInstanceSettings:uid=>uid==='pg'?{...pg,secret:'not query metadata'}:undefined});
+  global.fetch=async(_url,options)=>{bodies.push(JSON.parse(options.body));return new Response(JSON.stringify({results:{B:{frames:[]}}}));};
+  try {
+    for(const [datasource,targetDatasource] of [['pg','pg'],['pg',undefined],[pg,'pg'],[{uid:'pg'},{uid:'pg'}]]) {
+      const legacy={...panel,datasource,targets:[{...source,datasource:targetDatasource}]},ctx={...context,panels:[legacy]};
+      const candidates=api.__features.codeProposalCandidates(ctx,[1],'sql','SELECT 2',settings);
+      assert.equal(candidates.length,1);
+      const proposal=api.__features.codeProposal(ctx,[1],'sql','SELECT 2',settings);
+      assert.equal((await api.__features.validateDashboardProposal(settings,ctx,proposal)).ok,true);
+      assert.deepEqual(bodies.at(-1).queries[0].datasource,pg);
+      assert.match(bodies.at(-1).queries[0].rawSql,/LIMIT 101$/);
+      actual=structuredClone(legacy);saved=[];await api.__features.applyDashboardProposal(settings,ctx,proposal);
+      assert.equal(saved.length,1);assert.equal(saved[0][1].dashboard.panels[0].targets[0].rawSql,'SELECT 2');
+      const count=bodies.length;reads=0;saved=[];
+      const unsafe={panelId:1,targets:[{refId:'B',rawSql:'DELETE FROM orders'}]};
+      await assert.rejects(api.__features.validateDashboardProposal(settings,ctx,unsafe));
+      await assert.rejects(api.__features.applyDashboardProposal(settings,ctx,unsafe));
+      assert.equal(bodies.length,count);assert.equal(reads,0);assert.equal(saved.length,0);
+    }
+    for(const service of [undefined,()=>undefined,()=>({}),()=>{throw Error('Unavailable registry');}]) {
+      runtime.getDataSourceSrv=service;
+      const ctx={...context,panels:[{...panel,datasource:'pg',targets:[{...source,datasource:'pg'}]}]};
+      assert.deepEqual(api.__features.codeProposalCandidates(ctx,[1],'sql','SELECT 2',settings),[]);
+      await assert.rejects(api.__features.validateDashboardProposal(settings,ctx,{panelId:1,targets:[{refId:'B',rawSql:'SELECT 2'}]}),error=>!(error instanceof TypeError));
+    }
+  } finally {global.fetch=oldFetch;runtime.getDataSourceSrv=oldSrv;}
+});
+test('failed preview repairs the original interpolated SQL while only execution receives the row bound',async()=>{
+  const oldFetch=global.fetch,oldSrv=runtime.getDataSourceSrv;let body;
+  runtime.getDataSourceSrv=()=>({getInstanceSettings:()=>pg,get:async()=>({getRef:()=>pg,interpolateVariablesInQueries:queries=>queries.map(query=>({...query,rawSql:query.rawSql.replace('$field','missing')}))})});
+  global.fetch=async(_url,options)=>{body=JSON.parse(options.body);return new Response(JSON.stringify({results:{B:{error:'column missing does not exist',status:400}}}));};
+  try {
+    const proposal={panelId:1,targets:[{...source,rawSql:'SELECT $field FROM orders'}]};
+    const validation=await api.__features.validateDashboardProposal(settings,context,proposal);
+    assert.equal(validation.ok,false);assert.match(body.queries[0].rawSql,/__tech_ai_result/);assert.match(body.queries[0].rawSql,/LIMIT 101$/);
+    assert.equal(validation.details[0].query.rawSql,'SELECT missing FROM orders');assert.equal(validation.details[0].query.format,'time_series');
+    const prompt=api.__features.repairPrompt(validation,settings);
+    assert.match(prompt,/SELECT missing FROM orders/);assert.match(prompt,/column missing/);assert.doesNotMatch(prompt,/__tech_ai_result|LIMIT 101/);
+    assert.equal(proposal.targets[0].rawSql,'SELECT $field FROM orders');
+  } finally {global.fetch=oldFetch;runtime.getDataSourceSrv=oldSrv;}
+});
 test('UUID fallback is v4 and uses cryptographic randomness without randomUUID',()=>{
   const crypto=require('node:crypto').webcrypto,ids=Array.from({length:100},()=>q.uniqueId({getRandomValues:bytes=>crypto.getRandomValues(bytes)}));
   assert.equal(new Set(ids).size,100);assert.ok(ids.every(id=>/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id)));

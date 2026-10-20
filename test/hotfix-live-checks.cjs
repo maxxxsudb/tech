@@ -24,13 +24,27 @@ module.exports = async ({page,api,uid,from,to,check}) => {
     assert.equal(blocked.length,6);assert.ok(blocked.every(item=>item.error));assert.equal(sqlRequests.length,0);
   } finally {page.off('request',count);}
   check('Unsafe SQL proposal validation/save block before any ds/query or dashboard POST on actual Grafana');
-  const bounded=await page.evaluate(async({uid,from,to})=>{
-    const plugin=await System.import('/crf/dashboard/public/plugins/tech-ai-assistant-app/module.js'),ds={uid,type:'grafana-postgresql-datasource'};
-    const context={dashboardUid:uid,panels:[{id:1,datasource:ds,targets:[{refId:'A',datasource:ds,rawSql:'SELECT 1',format:'table',rawQuery:true}]}],timeRange:{from,to}};
-    return plugin.__features.validateDashboardProposal(plugin.__test.defaults,context,{panelId:1,targets:[{refId:'A',rawSql:'SELECT generate_series(1,1000) AS value'}]});
-  },{uid,from,to});
-  assert.equal(bounded.ok,true);assert.equal(bounded.details[0].rows,101);assert.match(bounded.details[0].query.rawSql,/LIMIT 101$/);
+  const executed=[];
+  const capture=request=>{if(request.url().endsWith('/api/ds/query'))executed.push(...JSON.parse(request.postData()).queries);};
+  page.on('request',capture);
+  let bounded,failed;
+  try {
+    ({bounded,failed}=await page.evaluate(async({uid,from,to})=>{
+      const plugin=await System.import('/crf/dashboard/public/plugins/tech-ai-assistant-app/module.js');
+      const context={dashboardUid:uid,panels:[{id:1,datasource:uid,targets:[{refId:'A',datasource:uid,rawSql:'SELECT 1',format:'table',rawQuery:true}]}],timeRange:{from,to}};
+      const proposal=plugin.__features.codeProposal(context,[1],'sql','SELECT generate_series(1,1000) AS value',plugin.__test.defaults);
+      if(!proposal)throw Error('String datasource code proposal unavailable');
+      const bounded=await plugin.__features.validateDashboardProposal(plugin.__test.defaults,context,proposal);
+      const failed=await plugin.__features.validateDashboardProposal(plugin.__test.defaults,context,{panelId:1,targets:[{refId:'A',rawSql:'SELECT missing_review_column FROM orders'}]});
+      return {bounded,failed:{...failed,prompt:plugin.__features.repairPrompt(failed,plugin.__test.defaults)}};
+    },{uid,from,to}));
+  } finally {page.off('request',capture);}
+  assert.equal(bounded.ok,true);assert.equal(bounded.details[0].rows,101);assert.equal(bounded.details[0].query.rawSql,'SELECT generate_series(1,1000) AS value');
+  assert.equal(executed.length,2);assert.ok(executed.every(query=>/LIMIT 101$/.test(query.rawSql)));
   check('Proposal preview actually bounds a thousand PostgreSQL rows to 100 plus one sentinel');
+  check('Legacy string datasource resolves through actual Grafana registry for code proposal and successful SELECT preview');
+  assert.equal(failed.ok,false);assert.equal(failed.details[0].query.rawSql,'SELECT missing_review_column FROM orders');assert.match(failed.prompt,/missing_review_column/);assert.doesNotMatch(failed.prompt,/__tech_ai_result|LIMIT 101/);
+  check('Real PostgreSQL error repair receives original SQL; preview LIMIT stays only in ds/query execution');
   for(const sql of ["SELECT to_jsonb(orders) FROM orders","SELECT jsonb_path_query('[1,2]'::jsonb,'$[*]') AS item","SELECT array_length(ARRAY[1,2],1) AS n","SELECT string_to_array('a,b',',') AS parts","SELECT regexp_split_to_table('a,b',',') AS item","SELECT format('%s','ok') AS text"]) {
     const q=require('../plugin/query-tools');const result=await api('/api/ds/query','POST',{from:String(from),to:String(to),queries:[{refId:'A',datasource:{uid,type:'grafana-postgresql-datasource'},format:'table',rawQuery:true,...q.boundedSql(sql)}]});
     assert.ok(!result.results.A.error,JSON.stringify(result));
