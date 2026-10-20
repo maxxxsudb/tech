@@ -83,3 +83,51 @@ test('silence edits detect concurrent modification and no retry occurs after unc
   const p = await a.previewSilence(request, f); await assert.rejects(a.applySilence(request, p, { role: 'Admin', confirmed: true, before }), /изменился/); assert.equal(posts, 0);
   const p2 = await a.previewSilence(request, fields()); await assert.rejects(a.applySilence(request, p2, { role: 'Admin', confirmed: true }), { status: 403 }); assert.equal(posts, 1);
 });
+test('single eval compatibility is independent of replay grid, current-time SQL and group interval', () => {
+  const rule = a.buildRule({ ...draft, intervalSeconds: 300 }, q.boundedSql), now = Date.UTC(2026, 9, 20, 12, 3);
+  assert.throws(() => a.planReplay(rule, 300, now - 120000, now - 60000, { now }), /0 eval/);
+  assert.doesNotThrow(() => a.assertBuilderCondition(rule));
+  rule.data[0].model.rawSql = 'SELECT now() AS time, 1 AS value';
+  assert.doesNotThrow(() => a.assertBuilderCondition(rule));
+  assert.throws(() => a.planReplay(rule, 300, now - 3600000, now, { now }), /текущее время/);
+  for (const bad of [{ ...rule, condition: 'X' }, { ...rule, data: [] }, { ...rule, keepFiringFor: '1m' }]) assert.throws(() => a.assertBuilderCondition(bad));
+});
+test('silence normalized readback preserves receipt, blocks retry and reconciles without another POST', async () => {
+  let saved, pending, posts = 0;
+  const request = async (path, options = {}) => {
+    if (path.endsWith('/alerts')) return [];
+    if (options.method === 'POST') { posts++; saved = { ...options.body, id: 'normalized', startsAt: new Date().toISOString(), status: { state: 'active' } }; return { silenceID: saved.id }; }
+    return saved ? [clone(saved)] : [];
+  };
+  const preview = await a.previewSilence(request, { ...fields(), startsAt: new Date(Date.now() - 60000).toISOString() });
+  await assert.rejects(a.applySilence(request, preview, { role: 'Admin', confirmed: true, onPending: value => { pending = clone(value); } }), /не подтверждён/);
+  assert.equal(pending.id, 'normalized');
+  await assert.rejects(a.applySilence(request, preview, { role: 'Admin', confirmed: true }), /Сначала сверьте/);
+  const result = await a.reconcileSilence(request, pending);
+  assert.equal(result.silence.id, 'normalized'); assert.equal(result.matches, false); assert.equal(posts, 1);
+});
+test('silence lost POST response is reconciled by unique fields; missing or ambiguous result never allows a write', async () => {
+  let saved = [], pending, posts = 0;
+  const request = async (path, options = {}) => {
+    if (path.endsWith('/alerts')) return [];
+    if (options.method === 'POST') { posts++; saved.push({ ...options.body, id: 'lost' }); throw Error('Connection lost'); }
+    return clone(saved);
+  };
+  const preview = await a.previewSilence(request, fields());
+  await assert.rejects(a.applySilence(request, preview, { role: 'Admin', confirmed: true, onPending: value => { pending = clone(value); } }), /Connection/);
+  assert.equal(pending.id, undefined); assert.equal((await a.reconcileSilence(request, pending)).silence.id, 'lost');
+  saved.push({ ...saved[0], id: 'duplicate' }); await assert.rejects(a.reconcileSilence(request, pending), /однозначно/);
+  saved = []; await assert.rejects(a.reconcileSilence(request, pending), /однозначно/);
+  await assert.rejects(a.applySilence(request, preview, { role: 'Admin', confirmed: true }), /Сначала сверьте/); assert.equal(posts, 1);
+});
+test('silence definitive permission rejection clears pending; failed readback retains known receipt', async () => {
+  let pending, rejectWrite = true;
+  const request = async (path, options = {}) => {
+    if (path.endsWith('/alerts')) return [];
+    if (options.method === 'POST') { if (rejectWrite) throw { status: 403 }; return { silenceID: 'accepted' }; }
+    throw { status: 500 };
+  };
+  const preview = await a.previewSilence(request, fields()), options = { role: 'Admin', confirmed: true, onPending: value => { pending = value; } };
+  await assert.rejects(a.applySilence(request, preview, options), { status: 403 }); assert.equal(pending, undefined); assert.equal(preview.pendingWrite, undefined);
+  rejectWrite = false; await assert.rejects(a.applySilence(request, preview, options), { status: 500 }); assert.equal(pending.id, 'accepted');
+});

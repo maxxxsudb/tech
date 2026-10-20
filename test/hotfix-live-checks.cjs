@@ -50,6 +50,14 @@ module.exports = async ({page,api,uid,from,to,check}) => {
     assert.ok(!result.results.A.error,JSON.stringify(result));
   }
   check('Curated JSON/array/string SQL functions execute successfully on existing PostgreSQL');
+  await page.evaluate(async({uid,from,to})=>{
+    const plugin=await System.import('/crf/dashboard/public/plugins/tech-ai-assistant-app/module.js'),React=await System.import('react');
+    const panel={id:1,datasource:{uid,type:'grafana-postgresql-datasource'},targets:[{refId:'A',rawSql:'SELECT 1',format:'table',hide:false}]};
+    window.reviewRoot.render(React.createElement(plugin.__features.ProposalView,{panel,context:{dashboardUid:uid,panels:[panel],timeRange:{from,to}},settings:plugin.__test.defaults,proposal:{panelId:1,targets:[{refId:'A',rawSql:'SELECT 1',format:'time_series',hide:true}]},onApply:()=>{throw Error('No save expected');}}));
+  },{uid,from,to});
+  await page.waitForFunction(()=>document.querySelector('[data-testid="tech-ai-query-diff"]')?.textContent.includes('"hide": true'));
+  assert.match(await page.$eval('[data-testid="tech-ai-query-diff"]',n=>n.textContent),/"format": "time_series"/);
+  check('Proposal UI shows saved hide/format changes even when the SQL text is unchanged');
   await page.emulateTimezone('America/New_York');
   await page.evaluate(async uid=>{
     const plugin=await System.import('/crf/dashboard/public/plugins/tech-ai-assistant-app/module.js'),React=await System.import('react');

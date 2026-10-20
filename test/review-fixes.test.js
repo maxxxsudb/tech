@@ -176,3 +176,40 @@ test('curated JSON/array/string functions remain readable while I/O, state and u
   for(const sql of ["SELECT to_jsonb(orders) FROM orders", "SELECT jsonb_path_query('[1,2]'::jsonb, '$[*]')",'SELECT array_length(ARRAY[1,2],1)',"SELECT string_to_array('a,b', ',')","SELECT regexp_split_to_table('a,b', ',')","SELECT format('%s', 'SELECT; DELETE')"]) assert.doesNotThrow(()=>q.boundedSql(sql),sql);
   for(const sql of ["SELECT pg_read_file('x')","SELECT dblink('x','y')","SELECT lo_import('x')","SELECT set_config('x','y',false)","SELECT nextval('s')","SELECT setval('s',1)",'SELECT public.to_jsonb(1)','SELECT arbitrary_function(1)']) assert.throws(()=>q.boundedSql(sql),sql);
 });
+test('target diff exposes all saved metadata while SQL-only edits remain compact',()=>{
+  const before={...source,hide:false}, proposed={refId:'B',rawSql:source.rawSql,format:'table',hide:true};
+  const lines=q.targetDiff(before,proposed);
+  assert.ok(lines.some(line=>line.type==='add'&&line.text.includes('"hide": true')));
+  assert.ok(lines.some(line=>line.type==='add'&&line.text.includes('"format": "table"')));
+  assert.deepEqual(q.targetDiff(before,{refId:'B',rawSql:'SELECT 2'}),q.diffLines(source.rawSql,'SELECT 2'));
+  assert.ok(q.targetDiff(before,{refId:'B',datasource:{uid:'other',type:pg.type}}).some(line=>line.type==='add'&&line.text.includes('other')));
+  assert.ok(q.targetDiff({...before,expr:'up'},{refId:'B',rawSql:'SELECT 3'}).some(line=>line.type==='add'&&line.text.includes('SELECT 3')));
+});
+test('untrusted proposal parser rejects malformed targets, duplicate IDs and non-string expressions before rendering',()=>{
+  const parse=targets=>api.__test.parseDashboardProposal('```dashboard-json\n'+JSON.stringify({panelId:1,targets})+'\n```');
+  for(const targets of [[null],['SELECT 1'],[[]],[{refId:1}],[{refId:' '}],[{rawSql:{sql:'SELECT 1'}}],[{expr:42}],[{datasource:42}],[{datasource:{uid:{}}}],[{refId:'A'},{refId:'A'}],Array.from({length:21},(_,i)=>({refId:String(i)}))]) assert.equal(parse(targets),undefined);
+  assert.equal(api.__test.parseDashboardProposal('```dashboard-json\n{"panelId":1,"targets":[{"__proto__":{}}]}\n```'),undefined);
+  assert.ok(parse([{refId:'B',rawSql:'SELECT 1',format:'table'}])); assert.ok(parse([]));
+});
+test('pending silence survives remount, blocks creation and adopts readback using GET only',async()=>{
+  const oldFetch=global.fetch,oldSession=global.sessionStorage,oldLocal=global.localStorage;
+  const storage=new Map(),store={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)};
+  global.sessionStorage=store;global.localStorage=store;
+  const body={matchers:[{name:'service',value:'fixture',isRegex:false,isEqual:true}],startsAt:new Date(Date.now()-60000).toISOString(),endsAt:new Date(Date.now()+3600000).toISOString(),comment:'fixture',createdBy:'test'};
+  store.setItem('tech-ai-assistant:silence-pending:v1:1',JSON.stringify({at:Date.now(),body,id:'saved'}));
+  let state=[],index=0,calls=[];
+  const React={createElement:(type,props,...children)=>({type,props:props||{},children:children.flat(Infinity)}),useState:initial=>{const i=index++;if(!(i in state))state[i]=typeof initial==='function'?initial():initial;return[state[i],value=>{state[i]=typeof value==='function'?value(state[i]):value;}];},useEffect:()=>{},useRef:()=>({})};
+  const localRuntime={...runtime,config:{bootData:{user:{orgId:1,orgRole:'Admin'}}}};
+  const local=factory({AppPlugin},localRuntime,React,{},require('../plugin/attachments'),require('../plugin/conversation'),q,{},a);
+  const render=()=>{index=0;return local.__features.AlertSilences({context:{alerting:{instances:[]}}});};
+  const nodes=tree=>tree&&typeof tree==='object'?[tree,...tree.children.flatMap(nodes)]:[];
+  const find=id=>nodes(render()).find(node=>node.props['data-testid']===id);
+  global.fetch=async(url,options)=>{calls.push(options.method);return new Response(JSON.stringify([{...body,id:'saved',startsAt:new Date().toISOString(),status:{state:'active'}}]));};
+  try {
+    assert.ok(find('tech-ai-silence-pending'));assert.equal(find('tech-ai-silence-apply').props.disabled,true);
+    await find('tech-ai-silence-reconcile').props.onClick();
+    assert.deepEqual(calls,['GET']);assert.equal(find('tech-ai-silence-pending'),undefined);assert.equal(store.getItem('tech-ai-assistant:silence-pending:v1:1'),null);
+    assert.ok(find('tech-ai-silence-apply').children.includes('Сохранить silence'));
+    assert.equal(find('tech-ai-silence-confirm').props.checked,false);assert.equal(find('tech-ai-silence-apply').props.disabled,true);
+  } finally {global.fetch=oldFetch;global.sessionStorage=oldSession;global.localStorage=oldLocal;}
+});

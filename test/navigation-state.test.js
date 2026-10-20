@@ -44,7 +44,7 @@ test('real Assistant effects switch context/history, abort in-flight reply and d
   assert.equal(state[6], true); assert.equal(state[3][0].content, 'Investigate A');
   refs[0].current = { panelData: [{ panelId: 1 }] };
   navigate('/grafana/d/b/title'); assert.equal(oldSignal.aborted, true); await flush();
-  assert.equal(state[1].dashboardUid, 'b'); assert.equal(state[2], 'tech-ai-chat:b'); assert.deepEqual(state[3], []); assert.equal(refs[0].current, undefined);
+  assert.equal(state[1].dashboardUid, 'b'); assert.equal(state[2], 'tech-ai-chat:org-1:b'); assert.deepEqual(state[3], []); assert.equal(refs[0].current, undefined);
   resolveOld(new Response(JSON.stringify({ choices: [{ message: { content: 'Old answer from A' } }] }))); await flush();
   assert.deepEqual(state[3], []); assert.equal(state[6], false);
   navigate('/grafana/d/a/title'); await flush();
@@ -53,11 +53,27 @@ test('real Assistant effects switch context/history, abort in-flight reply and d
 
 test('panel to dashboard to Explore does not reuse the initial extension or old panels', async () => {
   reset('/grafana/d/a/title?viewPanel=panel-1', { panelId: 1 }); await flush();
-  assert.equal(state[1].panel.id, 1); assert.equal(state[2], 'tech-ai-chat:a:panel-1');
+  assert.equal(state[1].panel.id, 1); assert.equal(state[2], 'tech-ai-chat:org-1:a:panel-1');
   navigate('/grafana/d/a/title'); await flush(); assert.equal(state[1].panel, undefined); assert.equal(state[1].panels.length, 2);
   const panes = { a: { datasource: pg, queries: [{ refId: 'A', rawSql: 'select 99', format: 'table' }], range: { from: 'now-1h', to: 'now' } } };
   navigate('/grafana/explore?panes=' + encodeURIComponent(JSON.stringify(panes))); await flush();
   assert.equal(state[1].isExplore, true); assert.equal(state[1].dashboardUid, undefined); assert.equal(state[1].panels[0].targets[0].rawSql, 'select 99');
+});
+test('same dashboard in another organization isolates chat, selection and draft without importing unscoped history', async () => {
+  try {
+    runtime.config.bootData.user.orgId = 1; reset('/grafana/d/shared/title');
+    storage.set('tech-ai-chat:shared', JSON.stringify([{ role: 'user', content: 'unknown legacy owner' }]));
+    storage.set('tech-ai-chat:org-1:shared', JSON.stringify([{ role: 'user', content: 'organization one' }]));
+    storage.set('tech-ai-chat:org-1:shared:draft', 'draft one'); await flush();
+    assert.equal(state[3][0].content, 'organization one');
+    assert.equal(nodes(render()).find(node => node.type === 'textarea').props.value, 'draft one');
+    runtime.config.bootData.user.orgId = 2; navigate('/grafana/d/shared/title?orgId=2'); await flush();
+    assert.equal(state[2], 'tech-ai-chat:org-2:shared'); assert.deepEqual(state[3], []);
+    assert.equal(nodes(render()).find(node => node.type === 'textarea').props.value, '');
+    runtime.config.bootData.user.orgId = 1; navigate('/grafana/d/shared/title?orgId=1'); await flush();
+    assert.equal(state[3][0].content, 'organization one');
+    assert.equal(nodes(render()).find(node => node.type === 'textarea').props.value, 'draft one');
+  } finally { runtime.config.bootData.user.orgId = 1; }
 });
 
 test('dashboard to Alerting switches to the rule and its PostgreSQL query without running it', async () => {

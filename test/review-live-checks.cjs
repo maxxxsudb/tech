@@ -90,7 +90,7 @@ module.exports = async ({ page, api, uid, folderUid, from, to, check }) => {
     if(url.endsWith('/api/ds/query')&&(request.postData()||'').includes('DELETE FROM orders'))unsafeQueries++;
     if(protectedBytes && /\/public\/plugins\/tech-ai-assistant-app\/module\.js(?:\?|$)/.test(url)) { protectedResponses++; return request.respond({status:200,contentType:'application/javascript',body:protectedBytes}); }
     if(url.endsWith('/api/plugins/tech-ai-assistant-app/settings') && request.method()==='GET') return request.respond({status:200,contentType:'application/json',body:JSON.stringify({...savedSettings,jsonData:{...savedSettings.jsonData,streaming:false,previewBeforeSend:'never',includePanelData:false}})});
-    if(url.includes('/api/plugin-proxy/tech-ai-assistant-app/') && request.method()==='POST') { models++; return request.respond({status:200,contentType:'application/json',body:JSON.stringify({choices:[{message:{content:'```sql\n'+(models===1?'DELETE FROM orders':models===2?'SELECT missing_review_column FROM orders':correctedSql)+'\n```'}}]})}); }
+    if(url.includes('/api/plugin-proxy/tech-ai-assistant-app/') && request.method()==='POST') { models++; return request.respond({status:200,contentType:'application/json',body:JSON.stringify({choices:[{message:{content:(models===1?'```dashboard-json\n{"panelId":1,"targets":[null]}\n```\n':'')+'```sql\n'+(models===1?'DELETE FROM orders':models===2?'SELECT missing_review_column FROM orders':correctedSql)+'\n```'}}]})}); }
     if(url.endsWith('/api/dashboards/db') && request.method()==='POST') writes++;
     return request.continue();
   };

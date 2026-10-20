@@ -484,11 +484,15 @@
     return Object.assign(evaluateFrames(response), { at, fingerprint: canonical(rule) });
   }
 
-  function planReplay(rule, intervalSeconds, from, to, options) {
-    options = options || {};
+  function assertBuilderCondition(rule) {
     if (rule.condition !== "C" || rule.data?.length !== 3 || rule.data[1].model?.type !== "reduce" || rule.data[2].model?.type !== "threshold" || rule.data[1].model?.expression !== "A" || rule.data[2].model?.expression !== "B") throw Error("Replay поддерживает только builder query → reduce → threshold");
     const evaluator = rule.data[2].model.conditions;
     if (rule.data.map(query => query.refId).join(",") !== "A,B,C" || !["last", "mean", "min", "max", "sum"].includes(rule.data[1].model.reducer) || evaluator?.length !== 1 || !thresholdOperators.includes(evaluator[0].evaluator?.type) || evaluator[0].evaluator.params?.length !== 1 || !Number.isFinite(evaluator[0].evaluator.params[0]) || !Number.isFinite(durationSeconds(rule.for)) || rule.keepFiringFor && durationSeconds(rule.keepFiringFor) !== 0) throw Error("Неподдерживаемое условие или recovery в replay");
+  }
+
+  function planReplay(rule, intervalSeconds, from, to, options) {
+    options = options || {};
+    assertBuilderCondition(rule);
     const source = rule.data[0].model, sql = source.rawSql;
     if (sql) {
       // SQL literals cannot safely be inspected with a keyword regexp: replay deliberately rejects doubtful queries.
@@ -738,11 +742,36 @@
     }
     const fresh = await previewSilence(request, preview.body, { signal: options.signal });
     if (fresh.impact !== preview.impact) throw Error("Состав затронутых алертов изменился; повторите preview");
-    const result = await request(silenceBase, { method: "POST", body: preview.body, signal: options.signal });
+    if (preview.pendingWrite) throw Error("Сначала сверьте результат предыдущей записи silence");
+    const pending = { at: Date.now(), body: JSON.parse(JSON.stringify(preview.body)), id: preview.body.id };
+    preview.pendingWrite = pending; options.onPending?.(pending);
+    let result;
+    try { result = await request(silenceBase, { method: "POST", body: preview.body, signal: options.signal }); }
+    catch (error) {
+      if ([400, 401, 403, 404, 409, 422].includes(error.status)) { delete preview.pendingWrite; options.onPending?.(undefined); }
+      throw error;
+    }
     if (!result.silenceID) throw Error("Не получен silenceID; проверьте Grafana перед повтором");
+    pending.id = result.silenceID; options.onPending?.(Object.assign({}, pending));
     const list = await request(silenceBase, { signal: options.signal }), saved = list.find(item => item.id === result.silenceID);
     if (!saved || canonical(silenceBody(saved)) !== canonical(Object.assign({}, preview.body, { id: result.silenceID }))) throw Error("Silence не подтверждён; проверьте Grafana перед повтором");
+    delete preview.pendingWrite; options.onPending?.(undefined);
     return saved;
+  }
+
+  async function reconcileSilence(request, pending, options) {
+    if (!pending?.body) throw Error("Нет незавершённой записи silence");
+    const list = await request(silenceBase, options);
+    if (!Array.isArray(list)) throw Error("Не получен список silences");
+    const project = value => Object.fromEntries(['matchers', 'startsAt', 'endsAt', 'comment', 'createdBy'].map(key => [key, value[key]]));
+    const expected = project(pending.body);
+    const candidates = pending.id ? list.filter(item => item.id === pending.id) : list.filter(item => {
+      const actual = project(item), start = Date.parse(item.startsAt);
+      if (Date.parse(expected.startsAt) <= pending.at && start >= pending.at - 1000 && start <= Date.now()) actual.startsAt = expected.startsAt;
+      return canonical(actual) === canonical(expected);
+    });
+    if (candidates.length !== 1) throw Error("Результат silence не определён однозначно. Проверьте Grafana; повторная запись заблокирована.");
+    return { silence: candidates[0], matches: canonical(project(candidates[0])) === canonical(expected) };
   }
 
   async function expireSilence(request, before, options) {
@@ -779,5 +808,5 @@
   const triagePrompt = "Разбери выбранный алерт: что проверяет правило, состояние и экземпляры, когда началось срабатывание, какие факты доступны, гипотезы и следующие проверки. Отделяй условие от причины, а факт срабатывания от доставки уведомления. Если данные запросов ещё не получены, явно укажи это. Не изменяй правила и не создавай silence.";
   const overviewPrompt = "Дай короткую сводку активных экземпляров алертов по service/severity: количество, самые старые, что проверить первым. Отдельно укажи подавленные экземпляры и ограничения доступа/выборки. Не выдавай отсутствие доступа за отсутствие алертов. Не делай выводов об истории или доставке уведомлений без фактов.";
 
-  return { queryVariables, thresholdBreach, ruleUid, normalizeRule, stateRules, normalizeAlert, summarizeAlerts, linkedPanel, readContext, rulePanels, durationSeconds, timingActive, routePreview, readNotificationEvidence, notificationReport, auditRules, readAudit, auditMarkdown, canonical, validateDraft, buildRule, evaluateFrames, previewRule, planReplay, replayStatistics, replayRule, readCreationContext, verifyGroup, createPaused, appendCreationAudit, ruleResourcePath, resourceRule, readManagedRule, lifecycleCandidate, lifecyclePlan, lifecyclePatch, applyLifecycle, importDraft, yaml, silenceBody, previewSilence, applySilence, expireSilence, postgresTemplate, triagePrompt, overviewPrompt };
+  return { assertBuilderCondition, reconcileSilence, queryVariables, thresholdBreach, ruleUid, normalizeRule, stateRules, normalizeAlert, summarizeAlerts, linkedPanel, readContext, rulePanels, durationSeconds, timingActive, routePreview, readNotificationEvidence, notificationReport, auditRules, readAudit, auditMarkdown, canonical, validateDraft, buildRule, evaluateFrames, previewRule, planReplay, replayStatistics, replayRule, readCreationContext, verifyGroup, createPaused, appendCreationAudit, ruleResourcePath, resourceRule, readManagedRule, lifecycleCandidate, lifecyclePlan, lifecyclePatch, applyLifecycle, importDraft, yaml, silenceBody, previewSilence, applySilence, expireSilence, postgresTemplate, triagePrompt, overviewPrompt };
 });

@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.9.12";
+  const PLUGIN_VERSION = "0.9.13";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -1591,7 +1591,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     if (!match) return undefined;
     try {
       const proposal = JSON.parse(match[1]);
-      if (!Number.isFinite(Number(proposal.panelId)) || !Array.isArray(proposal.targets)) return undefined;
+      if (!Number.isSafeInteger(Number(proposal.panelId)) || Number(proposal.panelId) <= 0 || !Array.isArray(proposal.targets) || proposal.targets.length > 20) return undefined;
+      if (proposal.targets.some(target => !target || typeof target !== 'object' || Array.isArray(target) || Object.keys(target).some(key => ['__proto__', 'constructor', 'prototype'].includes(key)) || ['rawSql', 'expr', 'query'].some(key => Object.hasOwn(target, key) && (typeof target[key] !== 'string' || target[key].length > 20000)) || Object.hasOwn(target, 'refId') && (typeof target.refId !== 'string' || !target.refId.trim() || target.refId.length > 64))) return undefined;
+      if (proposal.targets.some(({ datasource: ds }) => ds != null && (typeof ds === 'string' ? !ds.trim() : typeof ds !== 'object' || Array.isArray(ds) || typeof ds.uid !== 'string' || !ds.uid.trim() || ds.type != null && typeof ds.type !== 'string'))) return undefined;
+      if (new Set(proposal.targets.map(queryTools.targetId)).size !== proposal.targets.length) return undefined;
       return { panelId: Number(proposal.panelId), targets: proposal.targets };
     } catch (_) {
       return undefined;
@@ -2889,7 +2892,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           const url = exploreUrl(props.context, datasource, target);
           return h("div", { key: id, style: { marginTop: 10 } },
             h("label", null, h("input", { type: "checkbox", checked: selected.includes(id), disabled: props.busy, onChange: (event) => setSelected((ids) => event.target.checked ? ids.concat([id]) : ids.filter((item) => item !== id)) }), ` Запрос ${target.refId || index + 1}`),
-            h(QueryDiff, { lines: queryTools.diffLines(queryTools.expression(before), queryTools.expression(target)) }),
+            h(QueryDiff, { lines: queryTools.targetDiff(before, target) }),
             url ? h("a", { href: url, target: "_blank", rel: "noreferrer" }, "Проверить в Explore") : null
           );
         })
@@ -2914,7 +2917,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     if (context && context.isAlerting) return `tech-ai-chat:org-${orgId() || 1}:alert-${context.alerting && context.alerting.ruleUid || "overview"}`;
     const selected = context && context.panel ? `:panel-${context.panel.id}` : "";
     const base = (context && context.dashboardUid) || location.pathname;
-    return `tech-ai-chat:${base}${selected}`;
+    return `tech-ai-chat:org-${orgId() || 1}:${base}${selected}`;
   }
 
   function loadHistory(key) {
@@ -3248,7 +3251,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           mode === "gitops" ? h("button", { type: "button", style: styles.smallButton, disabled: plan.action === "delete", onClick: () => downloadAlertExport({ apiVersion: plan.before.apiVersion, kind: "AlertRule", metadata: { name: uid, namespace }, patchType: "application/json-patch+json", patch: alertingTools.lifecyclePatch(plan) }, "grafana-rule-patch", true) }, "Скачать YAML-патч") : h("div", null,
             action === "enable" ? h("button", { type: "button", style: styles.smallButton, disabled: blocked, "data-testid": "tech-ai-manage-eval", onClick: () => run(async signal => {
               const rule = alertingTools.resourceRule(snapshot.resource);
-              alertingTools.planReplay(rule, alertingTools.durationSeconds(snapshot.resource.spec.trigger.interval), Date.now() - 120000, Date.now() - 60000);
+              alertingTools.assertBuilderCondition(rule);
               const srv = grafanaRuntime.getDataSourceSrv?.();
               const panels = alertingTools.rulePanels(rule, uid => srv?.getInstanceSettings?.(uid));
               if (!panels.length || panels.some(panel => panel.targets.some(target => !isDatasourceAllowed(props.settings, panel, target)))) throw Error("Datasource не разрешён");
@@ -3280,16 +3283,25 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const user = grafanaRuntime.config.bootData?.user || {}, role = user.orgRole || "Viewer";
     const [fields, setFields] = React.useState(() => ({ matchers: Object.entries(props.context.alerting.instances?.[0]?.labels || {}).filter(([name]) => !name.startsWith("__")).slice(0, 5).map(([name, value]) => ({ name, value, isRegex: false, isEqual: true })), startsAt: new Date(Date.now() + 1000).toISOString(), endsAt: new Date(Date.now() + 3600000).toISOString(), comment: "", createdBy: user.login || "" }));
     const [list, setList] = React.useState([]), [before, setBefore] = React.useState(), [preview, setPreview] = React.useState(), [confirmed, setConfirmed] = React.useState(false), [typed, setTyped] = React.useState(""), [busy, setBusy] = React.useState(false), [message, setMessage] = React.useState("");
+    const pendingKey = 'tech-ai-assistant:silence-pending:v1:' + (user.orgId || 1);
+    const [pending, setPending] = React.useState(() => { try { return JSON.parse(sessionStorage.getItem(pendingKey) || 'null'); } catch (_) { return undefined; } });
+    function rememberPending(value) { setPending(value); try { if (value) sessionStorage.setItem(pendingKey, JSON.stringify(value)); else sessionStorage.removeItem(pendingKey); } catch (_) {} }
     const dateInputs = values => Object.fromEntries(['startsAt', 'endsAt'].map(name => [name, { value: queryTools.localDateTime(values[name]), badInput: false }]));
     const [times, setTimes] = React.useState(() => dateInputs(fields));
     const timeErrors = Object.fromEntries(['startsAt', 'endsAt'].map(name => [name, queryTools.localTimeError(times[name].value, times[name].badInput, true)]));
     const invalidTime = Object.values(timeErrors).some(Boolean);
     const operation = React.useRef(); React.useEffect(() => () => operation.current?.abort(), []);
-    const blocked = busy || props.busy;
+    const blocked = busy || props.busy || Boolean(pending);
     function update(patch, raw) { setFields(value => Object.assign({}, value, patch)); setTimes(value => Object.assign({}, value, Object.fromEntries(['startsAt', 'endsAt'].filter(name => Object.hasOwn(patch, name)).map(name => [name, raw?.[name] || { value: queryTools.localDateTime(patch[name]), badInput: false }])))); setPreview(undefined); setConfirmed(false); }
     async function run(task) { if (operation.current) return; const controller = new AbortController(); operation.current = controller; setBusy(true); setMessage(""); try { await task(controller.signal); } catch (error) { setMessage(controller.signal.aborted ? "Операция остановлена. Если запись уже отправлена, проверьте silence в Grafana перед повтором." : formatError(error)); } finally { if (operation.current === controller) { operation.current = undefined; setBusy(false); } } }
     function select(item) { setBefore(item); setFields({ id: item.id, matchers: item.matchers, startsAt: item.startsAt, endsAt: item.endsAt, comment: item.comment, createdBy: item.createdBy }); setTimes(dateInputs(item)); setPreview(undefined); setConfirmed(false); setTyped(""); }
     return h("details", { "data-testid": "tech-ai-alert-silences" }, h("summary", { style: { cursor: "pointer" } }, "Silence: подавление уведомлений"),
+      pending ? h('div', { role: 'status', 'data-testid': 'tech-ai-silence-pending' }, 'Результат предыдущей записи требует сверки' + (pending.id ? ': ' + pending.id : '') + '. Новая запись заблокирована.', h('button', { type: 'button', style: styles.smallButton, disabled: busy || props.busy, 'data-testid': 'tech-ai-silence-reconcile', onClick: () => run(async signal => {
+        const result = await alertingTools.reconcileSilence(grafanaRequest, pending, { signal });
+        select(result.silence); setList(items => items.filter(item => item.id !== result.silence.id).concat(result.silence)); rememberPending(undefined);
+        recordAlertAction('reconcile-silence', result.matches ? 'verified' : 'reconciled-with-differences', pending.body, result.silence);
+        setMessage(result.matches ? 'Silence подтверждён сверкой API' : 'Silence найден. Фактические поля загружены; проверьте отличия перед изменением.');
+      }) }, 'Сверить результат')) : null,
       h("div", { style: styles.context }, "Точные labels, до 7 дней, обязательный комментарий. Preview показывает текущие экземпляры; будущие совпадения тоже подавляются. API silence не имеет атомарной проверки версии."),
       h("button", { type: "button", style: styles.smallButton, disabled: blocked, "data-testid": "tech-ai-silences-load", onClick: () => run(async signal => { const value = await grafanaRequest("/api/alertmanager/grafana/api/v2/silences", { signal }); if (!Array.isArray(value)) throw Error("Неверный ответ silences"); setList(value); }) }, "Активные и предстоящие silence"),
       list.filter(item => item.status?.state !== "expired").map(item => h("div", { key: item.id }, h("button", { type: "button", style: styles.quietButton, disabled: blocked, onClick: () => select(item) }, `${item.id} · ${item.status?.state} · ${item.comment} · до ${new Date(item.endsAt).toLocaleString()}`))),
@@ -3304,7 +3316,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       h("label", { style: styles.attachment }, h("input", { type: "checkbox", checked: confirmed, disabled: blocked, "data-testid": "tech-ai-silence-confirm", onChange: event => setConfirmed(event.target.checked) }), " Подтверждаю matchers, срок и подавление совпадающих уведомлений."),
       h("button", { type: "button", style: styles.smallButton, disabled: blocked || !preview || !confirmed || !["Admin", "Editor"].includes(role), "data-testid": "tech-ai-silence-apply", onClick: () => run(async signal => {
         recordAlertAction(before ? "extend-silence" : "create-silence", "requested", before, preview.body);
-        try { const value = await alertingTools.applySilence(grafanaRequest, preview, { signal, role, confirmed, before }); const audit = recordAlertAction(before ? "extend-silence" : "create-silence", "verified", before, value); select(value); setList(items => items.filter(item => item.id !== value.id).concat(value)); setMessage(audit.ok ? "Silence подтверждён API" : "Silence сохранён; журнал: " + audit.error); }
+        try { const value = await alertingTools.applySilence(grafanaRequest, preview, { signal, role, confirmed, before, onPending: rememberPending }); const audit = recordAlertAction(before ? "extend-silence" : "create-silence", "verified", before, value); select(value); setList(items => items.filter(item => item.id !== value.id).concat(value)); setMessage(audit.ok ? "Silence подтверждён API" : "Silence сохранён; журнал: " + audit.error); }
         catch (error) { recordAlertAction("silence", "failed-or-uncertain", before, preview.body, formatError(error)); setPreview(undefined); setConfirmed(false); throw error; }
       }) }, before ? "Сохранить silence" : "Создать silence"),
       before ? h("div", null, h("label", { style: styles.field }, "Введите ID для завершения silence", h("input", { style: styles.input, value: typed, onChange: event => { setTyped(event.target.value); setConfirmed(false); } })), h("button", { type: "button", style: styles.quietButton, disabled: blocked || !confirmed || typed !== before.id || !["Admin", "Editor"].includes(role), onClick: () => run(async signal => {

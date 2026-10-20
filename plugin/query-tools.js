@@ -35,6 +35,13 @@
     }
     return result;
   }
+  function targetDiff(before, proposed) {
+    const after = Object.assign({}, before, proposed);
+    const stable = value => value && typeof value === 'object' ? Array.isArray(value) ? value.map(stable) : Object.fromEntries(Object.keys(value).sort().filter(key => value[key] !== undefined).map(key => [key, stable(value[key])])) : value;
+    const primary = ['expr', 'query', 'rawSql'].find(key => typeof before?.[key] === 'string') || ['expr', 'query', 'rawSql'].find(key => typeof after[key] === 'string');
+    const metadata = value => stable(Object.fromEntries(Object.entries(value || {}).filter(([key]) => key !== primary)));
+    return JSON.stringify(metadata(before)) === JSON.stringify(metadata(after)) ? diffLines(expression(before), expression(after)) : diffLines(JSON.stringify(stable(before || {}), null, 2), JSON.stringify(stable(after), null, 2));
+  }
   function localDateTime(iso) {
     const d = new Date(iso);
     if (!Number.isFinite(d.getTime())) return '';
@@ -179,5 +186,5 @@
     const prev = text(vars(before)), curr = text(vars(after));
     return { panels: changed.slice(0, 50), totalChangedPanels: changed.length, truncated: changed.length > 50 || prev.length > 4000 || curr.length > 4000 || changed.some(panel => panel.changes.some(change => change.truncated) || panel.queries.some(query => query.truncated)), variables: prev === curr ? null : { before: prev.slice(0, 4000), after: curr.slice(0, 4000), truncated: prev.length > 4000 || curr.length > 4000 }, settings: ["title", "timezone", "time", "refresh"].filter(key => text(before[key]) !== text(after[key])).map(key => ({ field: key, before: before[key], after: after[key] })) };
   }
-  return { expression, targetId, diffLines, foldDiff, localDateTime, localDateTimeIso, uniqueId, localTimeError, mergeSelectedTargets, diffTargetsList, selectedMergedTargets, boundedSql, postgresSchemaQuery, sqlFeedback, dashboardDiff };
+  return { targetDiff, expression, targetId, diffLines, foldDiff, localDateTime, localDateTimeIso, uniqueId, localTimeError, mergeSelectedTargets, diffTargetsList, selectedMergedTargets, boundedSql, postgresSchemaQuery, sqlFeedback, dashboardDiff };
 });

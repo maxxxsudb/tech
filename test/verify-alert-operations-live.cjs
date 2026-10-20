@@ -30,8 +30,8 @@ try {
   ds = true; await write('/api/datasources', 'POST', { uid, name: uid, type: 'grafana-postgresql-datasource', access: 'proxy', url: container + ':5432', user: database, jsonData: { database, sslmode: 'disable', postgresVersion: 1600 }, secureJsonData: { password } });
   folder = (await write('/api/folders', 'POST', { title: uid })).uid;
   const namespace = (await request('/api/frontend/settings')).namespace; assert.equal(namespace, 'default');
-  const draft = { uid, title: 'Operations SQL fixture', folderUID: folder, ruleGroup: 'unused', intervalSeconds: 60, lookbackSeconds: 600, for: '2m', threshold: 100, operator: 'gt', reducer: 'max', source: { datasource: { uid, type: 'grafana-postgresql-datasource' }, rawSql: 'SELECT $__timeTo()::timestamptz AS time, max(value)::double precision AS value FROM samples WHERE $__timeFilter(time)' }, labels: { service: uid }, annotations: { summary: uid } };
-  const rule = a.buildRule(draft, q.boundedSql), resource = { apiVersion: 'rules.alerting.grafana.app/v0alpha1', kind: 'AlertRule', metadata: { name: uid, namespace, annotations: { 'grafana.app/folder': folder } }, spec: { title: rule.title, paused: true, for: rule.for, trigger: { interval: '1m' }, noDataState: 'NoData', execErrState: 'Error', labels: rule.labels, annotations: rule.annotations, expressions: Object.fromEntries(rule.data.map(query => [query.refId, { source: query.refId === 'C', model: query.model, datasourceUID: query.datasourceUid, relativeTimeRange: { from: query.relativeTimeRange.from + 's', to: '0s' } }])) } };
+  const draft = { uid, title: 'Operations SQL fixture', folderUID: folder, ruleGroup: 'unused', intervalSeconds: 300, lookbackSeconds: 600, for: '2m', threshold: 100, operator: 'gt', reducer: 'max', source: { datasource: { uid, type: 'grafana-postgresql-datasource' }, rawSql: 'SELECT $__timeTo()::timestamptz AS time, max(value)::double precision AS value FROM samples WHERE $__timeFilter(time)' }, labels: { service: uid }, annotations: { summary: uid } };
+  const rule = a.buildRule(draft, q.boundedSql), resource = { apiVersion: 'rules.alerting.grafana.app/v0alpha1', kind: 'AlertRule', metadata: { name: uid, namespace, annotations: { 'grafana.app/folder': folder } }, spec: { title: rule.title, paused: true, for: rule.for, trigger: { interval: '5m' }, noDataState: 'NoData', execErrState: 'Error', labels: rule.labels, annotations: rule.annotations, expressions: Object.fromEntries(rule.data.map(query => [query.refId, { source: query.refId === 'C', model: query.model, datasourceUID: query.datasourceUid, relativeTimeRange: { from: query.relativeTimeRange.from + 's', to: '0s' } }])) } };
   const base = a.ruleResourcePath(namespace, uid), collection = base.slice(0, base.lastIndexOf('/'));
   ruleIds.add(uid); await write(collection, 'POST', resource);
   let snapshot = await a.readManagedRule(request, namespace, uid); assert.equal(snapshot.provenance, '');
@@ -86,6 +86,16 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid="tech-ai-manage-message"]')?.textContent.includes('подтверждено'));
   assert.equal((await a.readManagedRule(request, namespace, uid)).rule.title, 'UI verified SQL fixture');
   check('Real React UI diff, confirmation, PATCH and local journal');
+  await page.select('[data-testid="tech-ai-manage-action"]', 'enable');
+  await page.click('[data-testid="tech-ai-manage-preview"]'); await page.waitForSelector('[data-testid="tech-ai-manage-plan"]');
+  await page.click('[data-testid="tech-ai-manage-eval"]');
+  await page.waitForFunction(() => document.querySelector('[data-testid="tech-ai-manage-eval"]')?.textContent === 'Eval: ok');
+  assert.equal(await page.$eval('[data-testid="tech-ai-manage-apply"]', el => el.disabled), true);
+  await page.click('[data-testid="tech-ai-manage-confirm"]'); await page.click('[data-testid="tech-ai-manage-apply"]');
+  await page.waitForFunction(() => document.querySelector('[data-testid="tech-ai-manage-message"]')?.textContent === 'Действие подтверждено API. Обновите контекст.');
+  snapshot = await a.readManagedRule(request, namespace, uid); assert.equal(snapshot.rule.isPaused, false); assert.equal(snapshot.resource.spec.trigger.interval, '5m');
+  await a.applyLifecycle(request, namespace, a.lifecyclePlan(snapshot, 'pause'), { confirmed: true, role: 'Admin' });
+  check('Actual UI evaluates and explicitly enables a five-minute rule independently of replay grid, then fixture is paused');
   await page.screenshot({ path: 'test-results/alert-operations-ui.png' });
   await page.setViewport({ width: 390, height: 844 }); await page.screenshot({ path: 'test-results/alert-operations-mobile.png' });
   const overflow = await page.$eval('#operations-fixture', el => el.scrollWidth > el.clientWidth + 2); assert.equal(overflow, false);
@@ -129,6 +139,32 @@ try {
   assert.equal(await page.$('[data-testid="tech-ai-silence-impact"]'), null);
   assert.equal(await page.$eval('[data-testid="tech-ai-silence-confirm"]', el => el.checked), false);
   check('Existing silence preset preserves a valid start and recovers an empty start without reusing preview or confirmation');
+  const recoveryPage = await browser.newPage(), protectedBytes = fs.readFileSync('protected/tech-ai-assistant-app/module.js');
+  let recoveryPosts = 0, protectedResponses = 0;
+  try {
+    await recoveryPage.setRequestInterception(true);
+    recoveryPage.on('request', item => {
+      if (/\/public\/plugins\/tech-ai-assistant-app\/module\.js(?:\?|$)/.test(item.url())) { protectedResponses++; return item.respond({ status: 200, contentType: 'application/javascript', body: protectedBytes }); }
+      if (item.url().endsWith('/api/alertmanager/grafana/api/v2/silences') && item.method() === 'POST') recoveryPosts++;
+      return item.continue();
+    });
+    const openPending = async () => {
+      await recoveryPage.waitForSelector('#tech-ai-assistant-launcher'); await recoveryPage.click('#tech-ai-assistant-launcher');
+      await recoveryPage.waitForSelector('[data-testid="tech-ai-silence-pending"]');
+      await recoveryPage.$eval('[data-testid="tech-ai-silence-pending"]', node => { for (let parent = node.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true; });
+    };
+    await recoveryPage.goto(root + '/alerting/grafana/' + uid + '/view', { waitUntil: 'domcontentloaded' });
+    await recoveryPage.evaluate(pending => sessionStorage.setItem('tech-ai-assistant:silence-pending:v1:1', JSON.stringify(pending)), { at: Date.now(), id: uiSilence.id, body: { ...a.silenceBody(uiSilence), startsAt: new Date(Date.parse(uiSilence.startsAt) - 60000).toISOString() } });
+    await openPending(); assert.equal(await recoveryPage.$eval('[data-testid="tech-ai-silence-apply"]', el => el.disabled), true);
+    await recoveryPage.reload({ waitUntil: 'domcontentloaded' }); await openPending();
+    await recoveryPage.click('[data-testid="tech-ai-silence-reconcile"]');
+    await recoveryPage.waitForFunction(() => !document.querySelector('[data-testid="tech-ai-silence-pending"]') && document.querySelector('[data-testid="tech-ai-silence-message"]')?.textContent.includes('Фактические поля загружены'));
+    assert.equal(await recoveryPage.$eval('[data-testid="tech-ai-silence-apply"]', el => el.textContent), 'Сохранить silence');
+    assert.equal(await recoveryPage.$eval('[data-testid="tech-ai-silence-confirm"]', el => el.checked), false);
+    assert.equal(recoveryPosts, 0); assert.ok(protectedResponses >= 2);
+    report.protectedRecoveryModuleSHA256 = crypto.createHash('sha256').update(protectedBytes).digest('hex');
+    check('Full protected Assistant restores pending silence after reload, reconciles actual API by ID and sends zero duplicate POSTs');
+  } finally { await recoveryPage.close(); }
   await a.expireSilence(request, uiSilence, { confirmed: true, role: 'Admin', typedId: uiSilence.id });
   check('Real silence UI requires preview and confirmation; journal and API readback succeed');
   snapshot = await a.readManagedRule(request, namespace, uid);
