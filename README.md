@@ -128,6 +128,24 @@ allow_loading_unsigned_plugins = tech-ai-assistant-app
 
 Несохранённые запросы выбранной панели подхватываются только когда Grafana передаёт их в контексте расширения. Плагин не обещает доступ ко всем несохранённым правкам дашборда через внутренние API.
 
+## PostgreSQL: права для SQL-запросов ассистента
+
+SQL-инструмент пропускает только `SELECT`/`WITH`, проверяет функции по списку и добавляет `LIMIT`. Это защита на стороне браузера, она не заменяет права в базе. Запросы выполняются от пользователя, заданного в PostgreSQL datasource Grafana, поэтому этот пользователь должен иметь доступ только на чтение и ограничение времени запроса. Без `statement_timeout` даже разрешённый запрос (например, `generate_series` с `CROSS JOIN`) может долго нагружать сервер.
+
+Шаблон для администратора БД (имена базы, схемы и роли замените на свои):
+
+```sql
+CREATE ROLE grafana_reader LOGIN PASSWORD 'change-me';
+GRANT CONNECT ON DATABASE app TO grafana_reader;
+GRANT USAGE ON SCHEMA public TO grafana_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO grafana_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO grafana_reader;
+ALTER ROLE grafana_reader SET default_transaction_read_only = on;
+ALTER ROLE grafana_reader SET statement_timeout = '10s';
+```
+
+`ALTER DEFAULT PRIVILEGES` действует для таблиц, которые позже создаст выполнивший его пользователь; для других владельцев повторите команду от их имени. После этого укажите `grafana_reader` в PostgreSQL datasource и проверьте его через **Save & test**.
+
 ## Тесты
 
 В 0.9.2 состав отправки раскрывается по нажатию на подпись под вопросом; там указаны конкретные панели, период и причины ограничений. Эти сведения не меняются у старых сообщений. Смена текущего контекста подсвечивает существующую строку над чатом — нажмите её, чтобы посмотреть изменения и выбрать панель без перехода на другую вкладку. «Начать новый диалог» остаётся добровольным действием.
@@ -135,8 +153,11 @@ allow_loading_unsigned_plugins = tech-ai-assistant-app
 Во время ответа можно писать следующий вопрос: автоотправки нет, готовый ответ не стирает новый черновик. «Полученные данные» — прежний режим `snapshot`, не изображение; кнопка «Снимок экрана» прикладывает изображение (на узком экране отображается значком камеры).
 
 ```bash
+npm ci
 node --test test/*.test.js
 ```
+
+`npm ci` нужен один раз: `test/protection-build.test.js` использует devDependencies (`acorn`, `terser`, `javascript-obfuscator`). Остальные тесты работают без установки пакетов.
 
 Unit-тесты покрывают разбор стрима, текстовый протокол запросов, сжатие контекста, rows и санитизацию без Grafana и браузера. E2E-скрипты `test/verify-*.js` работают против запущенной Grafana.
 

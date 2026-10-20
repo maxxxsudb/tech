@@ -37,8 +37,11 @@ test('релизный ZIP содержит только папку plugin ID, �
   assert.ok(files.some(file => file.name === manifest.id + '/plugin.json'));
 });
 
-test('все файлы релизного ZIP побайтово совпадают с plugin/, включая manifest и версию', () => {
-  for (const file of entries()) assert.deepEqual(file.data, fs.readFileSync(path.join(pluginRoot, file.name.substring(manifest.id.length + 1))), file.name);
+// ZIP собирается и на Windows: CRLF в архиве и LF в git — одно и то же содержимое.
+const lf = data => Buffer.from(data.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
+
+test('все файлы релизного ZIP совпадают с plugin/ с точностью до CRLF/LF, включая manifest и версию', () => {
+  for (const file of entries()) assert.deepEqual(lf(file.data), lf(fs.readFileSync(path.join(pluginRoot, file.name.substring(manifest.id.length + 1)))), file.name);
   const packagedManifest = JSON.parse(entries().find(file => file.name === manifest.id + '/plugin.json').data.toString('utf8'));
   assert.equal(packagedManifest.info.version, manifest.info.version);
   assert.ok(fs.readFileSync(path.join(pluginRoot, 'module.js'), 'utf8').includes(`PLUGIN_VERSION = "${manifest.info.version}"`));
