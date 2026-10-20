@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.9.13";
+  const PLUGIN_VERSION = "0.9.14";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -2405,8 +2405,18 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const range = context && context.timeRange || {}, from = range.from, to = range.to;
     const known = { "now-1h": "Последний час", "now-6h": "Последние 6 часов", "now-24h": "Последние 24 часа", "now-7d": "Последние 7 дней" };
     const period = snapshot && snapshot.range ? contextRangeLabel(snapshot.range, range.timezone) : to === "now" && known[from] ? known[from] : from != null && to != null ? contextRangeLabel(range) : "Диапазон дашборда";
-    const mode = preview ? ({ structure: "Без данных", snapshot: "Полученные данные", sample: "Короткий пример", investigation: "Расследование" }[preview.dataMode] || "По настройкам") : snapshot && snapshot.stats && snapshot.stats.loaded ? `Данные: ${snapshot.stats.loaded}/${snapshot.stats.total}` : "Без данных";
+    const mode = preview ? ({ structure: "Структура", snapshot: "Полученные данные", sample: "Короткий пример", investigation: "Расследование" }[preview.dataMode] || "По настройкам") : snapshot && snapshot.stats && snapshot.stats.loaded ? `Данные: ${snapshot.stats.loaded}/${snapshot.stats.total}` : "Структура";
     return { scope, period, mode };
+  }
+
+  function composerPlaceholder(context, selectedIds) {
+    if (context?.isAlerting) return context.alerting?.ruleUid ? 'Например: почему сработал этот алерт?' : 'Например: какие алерты требуют внимания?';
+    const panels = availablePanels(context).filter(panel => (selectedIds || []).includes(Number(panel.id)));
+    const types = new Set(Array.from(contextDatasources({ panels }).values()).map(source => source.type));
+    if (types.size === 1 && types.has('grafana-postgresql-datasource')) return 'Например: проверь SQL этой панели';
+    if (types.size === 1 && types.has('prometheus')) return 'Например: проверь PromQL этой панели';
+    if (types.size === 1 && types.has('loki')) return 'Например: найди причину ошибок в логах';
+    return 'Задайте вопрос по выбранным данным';
   }
 
   function contextDescriptor(context, selectedIds) {
@@ -3279,13 +3289,19 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       busy ? h("button", { type: "button", style: styles.quietButton, onClick: () => operation.current?.abort() }, "Остановить; результат записи проверить в Grafana") : null);
   }
 
+  function silencePendingKey() { return 'tech-ai-assistant:silence-pending:v1:' + (orgId() || 1); }
+  function loadPendingSilence() { try { return JSON.parse(sessionStorage.getItem(silencePendingKey()) || 'null'); } catch (_) { return undefined; } }
+
   function AlertSilences(props) {
     const user = grafanaRuntime.config.bootData?.user || {}, role = user.orgRole || "Viewer";
     const [fields, setFields] = React.useState(() => ({ matchers: Object.entries(props.context.alerting.instances?.[0]?.labels || {}).filter(([name]) => !name.startsWith("__")).slice(0, 5).map(([name, value]) => ({ name, value, isRegex: false, isEqual: true })), startsAt: new Date(Date.now() + 1000).toISOString(), endsAt: new Date(Date.now() + 3600000).toISOString(), comment: "", createdBy: user.login || "" }));
     const [list, setList] = React.useState([]), [before, setBefore] = React.useState(), [preview, setPreview] = React.useState(), [confirmed, setConfirmed] = React.useState(false), [typed, setTyped] = React.useState(""), [busy, setBusy] = React.useState(false), [message, setMessage] = React.useState("");
-    const pendingKey = 'tech-ai-assistant:silence-pending:v1:' + (user.orgId || 1);
-    const [pending, setPending] = React.useState(() => { try { return JSON.parse(sessionStorage.getItem(pendingKey) || 'null'); } catch (_) { return undefined; } });
-    function rememberPending(value) { setPending(value); try { if (value) sessionStorage.setItem(pendingKey, JSON.stringify(value)); else sessionStorage.removeItem(pendingKey); } catch (_) {} }
+    const pendingKey = silencePendingKey();
+    const [pending, setPending] = React.useState(loadPendingSilence);
+    const [expanded, setExpanded] = React.useState(() => Boolean(pending));
+    const recoveryRef = React.useRef();
+    React.useEffect(() => { if (!pending) return; setExpanded(true); const frame = requestAnimationFrame(() => recoveryRef.current?.scrollIntoView({ block: 'nearest' })); return () => cancelAnimationFrame(frame); }, [Boolean(pending), pending?.id]);
+    function rememberPending(value) { setPending(value); if (value) props.onRecoveryNeeded?.(); try { if (value) sessionStorage.setItem(pendingKey, JSON.stringify(value)); else sessionStorage.removeItem(pendingKey); } catch (_) {} }
     const dateInputs = values => Object.fromEntries(['startsAt', 'endsAt'].map(name => [name, { value: queryTools.localDateTime(values[name]), badInput: false }]));
     const [times, setTimes] = React.useState(() => dateInputs(fields));
     const timeErrors = Object.fromEntries(['startsAt', 'endsAt'].map(name => [name, queryTools.localTimeError(times[name].value, times[name].badInput, true)]));
@@ -3295,13 +3311,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     function update(patch, raw) { setFields(value => Object.assign({}, value, patch)); setTimes(value => Object.assign({}, value, Object.fromEntries(['startsAt', 'endsAt'].filter(name => Object.hasOwn(patch, name)).map(name => [name, raw?.[name] || { value: queryTools.localDateTime(patch[name]), badInput: false }])))); setPreview(undefined); setConfirmed(false); }
     async function run(task) { if (operation.current) return; const controller = new AbortController(); operation.current = controller; setBusy(true); setMessage(""); try { await task(controller.signal); } catch (error) { setMessage(controller.signal.aborted ? "Операция остановлена. Если запись уже отправлена, проверьте silence в Grafana перед повтором." : formatError(error)); } finally { if (operation.current === controller) { operation.current = undefined; setBusy(false); } } }
     function select(item) { setBefore(item); setFields({ id: item.id, matchers: item.matchers, startsAt: item.startsAt, endsAt: item.endsAt, comment: item.comment, createdBy: item.createdBy }); setTimes(dateInputs(item)); setPreview(undefined); setConfirmed(false); setTyped(""); }
-    return h("details", { "data-testid": "tech-ai-alert-silences" }, h("summary", { style: { cursor: "pointer" } }, "Silence: подавление уведомлений"),
-      pending ? h('div', { role: 'status', 'data-testid': 'tech-ai-silence-pending' }, 'Результат предыдущей записи требует сверки' + (pending.id ? ': ' + pending.id : '') + '. Новая запись заблокирована.', h('button', { type: 'button', style: styles.smallButton, disabled: busy || props.busy, 'data-testid': 'tech-ai-silence-reconcile', onClick: () => run(async signal => {
+    return h("details", { "data-testid": "tech-ai-alert-silences", open: expanded, onToggle: event => setExpanded(event.currentTarget.open) }, h("summary", { style: { cursor: "pointer" } }, "Silence: подавление уведомлений"),
+      pending ? h('div', { ref: recoveryRef, role: 'status', style: { display: 'grid', gap: 8, padding: '8px 0', overflowWrap: 'anywhere' }, 'data-testid': 'tech-ai-silence-pending' }, 'Результат предыдущей записи требует сверки' + (pending.id ? ': ' + pending.id : '') + '. Новая запись заблокирована.', h('button', { type: 'button', style: styles.smallButton, disabled: busy || props.busy, 'data-testid': 'tech-ai-silence-reconcile', onClick: () => run(async signal => {
         const result = await alertingTools.reconcileSilence(grafanaRequest, pending, { signal });
         select(result.silence); setList(items => items.filter(item => item.id !== result.silence.id).concat(result.silence)); rememberPending(undefined);
         recordAlertAction('reconcile-silence', result.matches ? 'verified' : 'reconciled-with-differences', pending.body, result.silence);
         setMessage(result.matches ? 'Silence подтверждён сверкой API' : 'Silence найден. Фактические поля загружены; проверьте отличия перед изменением.');
-      }) }, 'Сверить результат')) : null,
+      }) }, 'Сверить результат'), message ? h('div', { role: 'status' }, message) : null) : null,
+      pending ? null : h(React.Fragment, null,
       h("div", { style: styles.context }, "Точные labels, до 7 дней, обязательный комментарий. Preview показывает текущие экземпляры; будущие совпадения тоже подавляются. API silence не имеет атомарной проверки версии."),
       h("button", { type: "button", style: styles.smallButton, disabled: blocked, "data-testid": "tech-ai-silences-load", onClick: () => run(async signal => { const value = await grafanaRequest("/api/alertmanager/grafana/api/v2/silences", { signal }); if (!Array.isArray(value)) throw Error("Неверный ответ silences"); setList(value); }) }, "Активные и предстоящие silence"),
       list.filter(item => item.status?.state !== "expired").map(item => h("div", { key: item.id }, h("button", { type: "button", style: styles.quietButton, disabled: blocked, onClick: () => select(item) }, `${item.id} · ${item.status?.state} · ${item.comment} · до ${new Date(item.endsAt).toLocaleString()}`))),
@@ -3325,7 +3342,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         catch (error) { recordAlertAction("expire-silence", "failed-or-uncertain", before, null, formatError(error)); setConfirmed(false); throw error; }
       }) }, "Завершить silence")) : null,
       message ? h("div", { role: "status", "data-testid": "tech-ai-silence-message", style: { overflowWrap: "anywhere" } }, message) : null,
-      busy ? h("button", { type: "button", style: styles.quietButton, onClick: () => operation.current?.abort() }, "Остановить; результат записи проверить в Grafana") : null);
+      busy ? h("button", { type: "button", style: styles.quietButton, onClick: () => operation.current?.abort() }, "Остановить; результат записи проверить в Grafana") : null));
   }
 
   function AlertNotificationPanel(props) {
@@ -3448,6 +3465,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
 
   function AlertContextCard(props) {
     const data = props.context.alerting;
+    const [detailsOpen, setDetailsOpen] = React.useState(() => Boolean(loadPendingSilence()));
     if (!data) return props.context.alertingDisabled ? h("div", { style: styles.context }, "Чтение Alerting отключено в Configuration") : null;
     const rule = data.rule;
     const summary = data.summary;
@@ -3470,7 +3488,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         h("button", { type: "button", style: styles.quietButton, disabled: props.busy, onClick: props.onRefresh }, "Обновить"),
         runbook ? h("a", { href: runbook, target: "_blank", rel: "noreferrer" }, "Runbook") : null
       ),
-      h("details", { style: Object.assign({}, styles.context, { maxHeight: "min(42dvh, 360px)", overflowY: "auto" }) }, h("summary", { style: { cursor: "pointer" } }, "Состав и свежесть данных"),
+      h("details", { open: detailsOpen, onToggle: event => setDetailsOpen(event.currentTarget.open), style: Object.assign({}, styles.context, { maxHeight: "min(42dvh, 360px)", overflowY: "auto" }) }, h("summary", { style: { cursor: "pointer" } }, "Состав и свежесть данных"),
         h("div", null, `Снимок: ${new Date(data.loadedAt).toLocaleString()}. История состояний и доставка уведомлений не загружались.`),
         (summary && summary.groups || []).slice(0, 6).map((group, index) => h("div", { key: index }, `${group.service} · ${group.severity}: ${group.instances}${group.suppressed ? " · подавлено " + group.suppressed : ""}${group.oldestAt ? " · с " + new Date(group.oldestAt).toLocaleString() : ""}`)),
         (data.rules || []).slice(0, 10).filter(item => item.uid).map(item => h("div", { key: item.uid }, h("a", { href: `${appSubUrl()}/alerting/grafana/${encodeURIComponent(item.uid)}/view` }, item.title || item.uid))),
@@ -3479,7 +3497,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         h(AlertNotificationPanel, { key: "notifications:" + props.context.pageUrl, context: props.context, busy: props.busy, onExplain: props.onExplainNotifications, onEvidence: props.onEvidence }),
         h(AlertAuditPanel, { key: props.context.pageUrl, busy: props.busy, onExplain: props.onExplainAudit }),
         h(AlertOperations, { key: "operations:" + props.context.pageUrl, context: props.context, settings: props.settings, busy: props.busy, onImport: props.onImport }),
-        h(AlertSilences, { key: "silences:" + props.context.pageUrl, context: props.context, busy: props.busy })
+        h(AlertSilences, { key: "silences:" + props.context.pageUrl, context: props.context, busy: props.busy, onRecoveryNeeded: () => setDetailsOpen(true) })
       )
     );
   }
@@ -4356,7 +4374,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       context ? h("div", { style: Object.assign({}, styles.contextStrip, { position: "relative" }), "data-testid": "tech-ai-context-strip" },
         h("button", { type: "button", style: Object.assign({}, styles.chip, { flex: "0 1 auto", textAlign: "left", cursor: "pointer" }), onClick: () => { setContextPopover(value => !value); setPanelChoice(undefined); setPanelFilter(""); }, "data-testid": "tech-ai-scope-chip", "aria-expanded": contextPopover, className: contextNotice && contextNotice.recent ? "tech-ai-context-changed" + (contextNotice.recent ? " tech-ai-context-recent" : "") : undefined, title: `${compactContext.scope} · ${compactContext.period}. Выбор панелей и изменения контекста` }, `${compactContext.scope} ▾`),
         h("button", { type: "button", style: Object.assign({}, styles.chip, { maxWidth: "35%", cursor: "pointer" }), className: "tech-ai-period-chip" + (contextNotice && contextNotice.recent && contextNotice.changes.includes("timeRange") ? " tech-ai-context-changed" + (contextNotice.recent ? " tech-ai-context-recent" : "") : ""), "data-testid": "tech-ai-period-chip", title: compactContext.period, onClick: () => { setContextPopover(value => !value); setPanelChoice(undefined); } }, compactContext.period),
-        h("span", { style: Object.assign({}, styles.chip, { flexShrink: 0 }), title: "Состав текущего контекста" }, compactContext.mode),
+        h("span", { style: Object.assign({}, styles.chip, { flexShrink: 0 }), title: compactContext.mode === 'Структура' ? 'В контексте запросы и настройки; выборка datasource не добавлена.' : 'Состав текущего контекста' }, compactContext.mode),
         contextPopover ? h("div", { ref: contextPopupRef, role: "dialog", "aria-label": panelChoice ? "Выберите панель" : "Контекст диалога", "data-testid": "tech-ai-context-popover", style: { position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 30, maxHeight: "min(420px, 60dvh)", overflowY: "auto", padding: 12, display: "grid", gap: 8, border: "1px solid rgba(128,128,128,.4)", borderRadius: 8, background: themeColors().background, boxShadow: "0 8px 30px rgba(0,0,0,.25)" }, onKeyDown: event => { if (event.key === "Escape") { event.stopPropagation(); setContextPopover(false); setPanelChoice(undefined); } } },
           h("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, h("strong", { style: { flex: 1 } }, panelChoice ? `Выберите панель · ${panelChoice.action.label || "для вопроса"}` : "Контекст диалога"), h("button", { type: "button", style: styles.quietButton, "aria-label": "Закрыть выбор контекста", onClick: () => { setContextPopover(false); setPanelChoice(undefined); } }, "×")),
           contextNotice ? h("details", { open: !panelChoice, "data-testid": "tech-ai-context-change-details", style: styles.context },
@@ -4450,7 +4468,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         history.length === 0 && !pending && !busy ? h("div", { style: styles.welcome, "data-testid": "tech-ai-welcome" },
           h("div", { style: { display: "grid", gap: 6 } },
             h("span", { style: { color: "#5794f2", fontSize: 12, fontWeight: 600, letterSpacing: ".04em" } }, "AI · АНАЛИЗ GRAFANA"),
-            h("strong", { style: { fontSize: 21, lineHeight: 1.3 } }, selectedPanelIds.length === 1 ? "Разберём вашу панель" : context && context.dashboardUid ? "Разберём ваш дашборд" : "Разберём текущий контекст"),
+            h("strong", { style: { fontSize: 21, lineHeight: 1.3 } }, context?.isAlerting ? context.alerting?.ruleUid ? 'Разберём ваш алерт' : 'Разберём текущие алерты' : selectedPanelIds.length === 1 ? "Разберём вашу панель" : context && context.dashboardUid ? "Разберём ваш дашборд" : "Разберём текущий контекст"),
             h("span", { style: Object.assign({}, styles.context, { fontSize: 13, lineHeight: 1.5 }) }, "Начните с действия или задайте свой вопрос. Перед отправкой можно проверить контекст.")
           ),
           h("div", { className: "tech-ai-welcome-grid" }, [
@@ -4611,7 +4629,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
             "aria-description": "Enter — отправить, Shift+Enter — новая строка",
             value: input,
             disabled: !ready || readingFiles,
-            placeholder: busy ? "Можно написать следующий вопрос — он не отправится автоматически" : "Например: исправь PromQL этой панели",
+            placeholder: busy ? "Можно написать следующий вопрос — он не отправится автоматически" : composerPlaceholder(liveContext, selectedPanelIds),
             onChange: (event) => {
               // Native resize не всегда отдаёт pointerup в React; запоминаем высоту до автороста.
               const height = event.currentTarget.getBoundingClientRect().height;

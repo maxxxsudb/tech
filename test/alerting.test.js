@@ -80,7 +80,7 @@ let factory;
 global.define = (_, fn) => { factory = fn; }; delete require.cache[require.resolve('../plugin/module.js')]; require('../plugin/module.js'); delete global.define;
 class AppPlugin { constructor() { const p = new Proxy(this, { get: () => () => p }); return p; } }
 const runtime = { config: { appSubUrl: '/grafana', bootData: { user: { orgId: 1 } } }, getTemplateSrv: () => ({ getVariables: () => [{ name: 'old_dashboard', current: { value: 'must not leak' } }] }), getDataSourceSrv: () => ({ getInstanceSettings: () => ({ type: 'grafana-postgresql-datasource' }) }) };
-const api = factory({ AppPlugin, BusEventWithPayload: class {} }, runtime, { createElement: (type, props, ...children) => ({ type, props, children }) }, {}, require('../plugin/attachments'), require('../plugin/conversation'), require('../plugin/query-tools'), {}, alerting);
+const api = factory({ AppPlugin, BusEventWithPayload: class {} }, runtime, { createElement: (type, props, ...children) => ({ type, props, children }), useState: initial => [typeof initial === 'function' ? initial() : initial, () => {}] }, {}, require('../plugin/attachments'), require('../plugin/conversation'), require('../plugin/query-tools'), {}, alerting);
 const originalLocation = global.location, originalFetch = global.fetch;
 test.after(() => { global.location = originalLocation; global.fetch = originalFetch; });
 const flatten = tree => tree && typeof tree === 'object' ? [tree, ...(tree.children || []).flat(Infinity).flatMap(flatten)] : [];

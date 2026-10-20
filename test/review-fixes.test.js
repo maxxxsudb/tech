@@ -206,7 +206,7 @@ test('pending silence survives remount, blocks creation and adopts readback usin
   const find=id=>nodes(render()).find(node=>node.props['data-testid']===id);
   global.fetch=async(url,options)=>{calls.push(options.method);return new Response(JSON.stringify([{...body,id:'saved',startsAt:new Date().toISOString(),status:{state:'active'}}]));};
   try {
-    assert.ok(find('tech-ai-silence-pending'));assert.equal(find('tech-ai-silence-apply').props.disabled,true);
+    assert.ok(find('tech-ai-silence-pending'));assert.equal(find('tech-ai-silence-apply'),undefined);
     await find('tech-ai-silence-reconcile').props.onClick();
     assert.deepEqual(calls,['GET']);assert.equal(find('tech-ai-silence-pending'),undefined);assert.equal(store.getItem('tech-ai-assistant:silence-pending:v1:1'),null);
     assert.ok(find('tech-ai-silence-apply').children.includes('Сохранить silence'));

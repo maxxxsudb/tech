@@ -155,7 +155,7 @@ try {
     };
     await recoveryPage.goto(root + '/alerting/grafana/' + uid + '/view', { waitUntil: 'domcontentloaded' });
     await recoveryPage.evaluate(pending => sessionStorage.setItem('tech-ai-assistant:silence-pending:v1:1', JSON.stringify(pending)), { at: Date.now(), id: uiSilence.id, body: { ...a.silenceBody(uiSilence), startsAt: new Date(Date.parse(uiSilence.startsAt) - 60000).toISOString() } });
-    await openPending(); assert.equal(await recoveryPage.$eval('[data-testid="tech-ai-silence-apply"]', el => el.disabled), true);
+    await openPending(); assert.equal(await recoveryPage.$('[data-testid="tech-ai-silence-apply"]'), null);
     await recoveryPage.reload({ waitUntil: 'domcontentloaded' }); await openPending();
     await recoveryPage.click('[data-testid="tech-ai-silence-reconcile"]');
     await recoveryPage.waitForFunction(() => !document.querySelector('[data-testid="tech-ai-silence-pending"]') && document.querySelector('[data-testid="tech-ai-silence-message"]')?.textContent.includes('Фактические поля загружены'));

@@ -617,7 +617,7 @@ test("Markdown fallback не исполняет HTML и сохраняет со�
 
 test("компактный контекст отражает только выбранные панели и настоящий снимок", () => {
   const context = { panels: [{ id: 1, title: "CPU" }, { id: 2, title: "RAM" }], timeRange: { from: "now-1h", to: "now" } };
-  assert.deepEqual(t.contextSummary(context, [2]), { scope: "Панель: RAM", period: "Последний час", mode: "Без данных" });
+  assert.deepEqual(t.contextSummary(context, [2]), { scope: "Панель: RAM", period: "Последний час", mode: "Структура" });
   const summary = t.contextSummary(context, [1, 2], { stats: { loaded: 1, total: 2 }, range: { from: 1000, to: 2000 } });
   assert.equal(summary.scope, "Панели: 2");
   assert.equal(summary.mode, "Данные: 1/2");
