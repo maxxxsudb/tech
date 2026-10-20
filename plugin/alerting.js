@@ -285,6 +285,37 @@
     return { fingerprint, instance, routing, observedReceivers: observed, silences, inhibitions, findings, readStatus: evidence.readStatus, loadedAt: evidence.loadedAt, routingSource: r.effective ? "Alertmanager effective config" : "provisioning policies", delivery: "unknown", deliveryVerified: false, limitations };
   }
 
+  function queryVariables(model) {
+    let expr = String(model.expr || '');
+    // Named capture references in label_replace's replacement are PromQL, not dashboard variables.
+    const pattern = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|#[^\n]*|\blabel_replace\s*\(/g;
+    let match;
+    while ((match = pattern.exec(expr))) {
+      if (!match[0].startsWith('label_replace')) continue;
+      const start = pattern.lastIndex, args = []; let depth = 0, quote, begin = start, end;
+      for (let i = start; i < expr.length; i++) {
+        const c = expr[i];
+        if (quote) { if (c === '\\' && quote !== '`') i++; else if (c === quote) quote = undefined; continue; }
+        if (['"', "'", '`'].includes(c)) { quote = c; continue; }
+        if ('([{'.includes(c)) depth++;
+        else if (')]}'.includes(c)) {
+          if (c === ')' && depth === 0) { args.push([begin, i]); end = i; break; }
+          depth--;
+        } else if (c === ',' && depth === 0) { args.push([begin, i]); begin = i + 1; }
+      }
+      if (end && args.length === 5) {
+        const [from, to] = args[2], value = expr.slice(from, to).trim();
+        if (/^(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`)$/.test(value)) expr = expr.slice(0, from) + ' '.repeat(to - from) + expr.slice(to);
+      }
+    }
+    const variables = text => String(text || '').match(/\$(?!__)[a-zA-Z_][a-zA-Z_0-9]*|\$\{(?!__)[^}]+\}/g) || [];
+    return { sql: [...new Set(variables(model.rawSql))], expr: [...new Set(variables(expr))] };
+  }
+  const thresholdOperators = ['gt', 'lt', 'gte', 'lte'];
+  function thresholdBreach(value, threshold, operator) {
+    if (!thresholdOperators.includes(operator)) throw Error('Неподдерживаемый оператор порога');
+    return operator === 'gte' ? value >= threshold : operator === 'lte' ? value <= threshold : operator === 'lt' ? value < threshold : value > threshold;
+  }
   function auditRules(rules, resources, now) {
     resources = resources || {}; now = now || Date.now();
     const stable = value => value && typeof value === "object" ? Array.isArray(value) ? value.map(stable) : Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
@@ -315,8 +346,8 @@
         if (["__expr__", "-100"].includes(query.datasourceUid)) continue;
         const range = Number(query.relativeTimeRange?.from) - Number(query.relativeTimeRange?.to || 0);
         if (interval && range > 0 && range < interval) issue("query_range", "warning", "Окно запроса короче интервала оценки", { refId: query.refId, rangeSeconds: range, intervalSeconds: interval });
-        const sql = query.model?.rawSql;
-        if (sql && /\$(?!__)[a-zA-Z_][a-zA-Z_0-9]*|\$\{(?!__)[^}]+\}/.test(sql)) issue("sql_variables", "error", "В SQL правила есть переменные дашборда", { refId: query.refId, variables: sql.match(/\$(?!__)[a-zA-Z_][a-zA-Z_0-9]*|\$\{(?!__)[^}]+\}/g) }, "Alert evaluation не использует переменные дашборда; задайте явные условия.");
+        const variables = queryVariables(query.model || {});
+        for (const field of ['sql', 'expr']) if (variables[field].length) issue(field === 'sql' ? 'sql_variables' : 'query_variables', 'error', `В ${field === 'sql' ? 'SQL' : 'PromQL/LogQL'} правила есть переменные дашборда`, { refId: query.refId, variables: variables[field] }, 'Alert evaluation не использует переменные дашборда; задайте явные условия.');
       }
       const duplicates = fingerprints.get(JSON.stringify(stable({ condition: rule.condition, data: rule.data, labels: rule.labels }))).filter(uid => uid !== rule.uid);
       if (duplicates.length) issue("duplicate", "warning", "Совпадают запросы, condition и labels", { otherRuleUids: duplicates }, "Проверьте необходимость дублей; разные for и окна работы могут быть намеренными.");
@@ -377,7 +408,7 @@
     if (!/^[a-zA-Z0-9_-]{1,40}$/.test(draft.uid || "")) errors.push("Некорректный uid нового правила");
     if (!draft.source?.datasource?.uid || !["grafana-postgresql-datasource", "prometheus", "loki"].includes(draft.source.datasource.type)) errors.push("Нужен PostgreSQL, Prometheus или Loki datasource панели");
     if (!["last", "mean", "min", "max", "sum"].includes(draft.reducer)) errors.push("Неподдерживаемый reducer");
-    if (!["gt", "lt"].includes(draft.operator)) errors.push("Поддерживаются условия gt/lt");
+    if (!thresholdOperators.includes(draft.operator)) errors.push("Поддерживаются условия gt/lt/gte/lte");
     if (draft.threshold === "" || draft.threshold == null || !Number.isFinite(Number(draft.threshold))) errors.push("Укажите числовой порог");
     if (!Number.isInteger(Number(draft.intervalSeconds)) || Number(draft.intervalSeconds) < 10 || Number(draft.intervalSeconds) > 86400) errors.push("Интервал группы должен быть 10–86400 секунд");
     if (!Number.isInteger(Number(draft.lookbackSeconds)) || Number(draft.lookbackSeconds) < 1 || Number(draft.lookbackSeconds) > 86400) errors.push("Окно запроса должно быть 1–86400 секунд");
@@ -403,7 +434,7 @@
       if (/\$(?!__)[a-zA-Z_][a-zA-Z_0-9]*|\$\{(?!__)[^}]+\}/.test(source.rawSql)) throw Error("Сначала подставьте переменные дашборда в SQL");
       model = { rawSql: source.rawSql, format: "time_series", rawQuery: true, editorMode: "code" };
     } else {
-      if (typeof source.expr !== "string" || !source.expr.trim() || source.expr.length > 20000 || /\$(?!__)[a-zA-Z_{]/.test(source.expr)) throw Error("Нужен запрос панели без переменных дашборда");
+      if (typeof source.expr !== "string" || !source.expr.trim() || source.expr.length > 20000 || queryVariables({ expr: source.expr }).expr.length) throw Error("Нужен запрос панели без переменных дашборда");
       model = { expr: source.expr, instant: false, range: true };
     }
     Object.assign(model, { refId: "A", datasource, intervalMs: Number(draft.intervalSeconds) * 1000, maxDataPoints: 1000 });
@@ -457,7 +488,7 @@
     options = options || {};
     if (rule.condition !== "C" || rule.data?.length !== 3 || rule.data[1].model?.type !== "reduce" || rule.data[2].model?.type !== "threshold" || rule.data[1].model?.expression !== "A" || rule.data[2].model?.expression !== "B") throw Error("Replay поддерживает только builder query → reduce → threshold");
     const evaluator = rule.data[2].model.conditions;
-    if (rule.data.map(query => query.refId).join(",") !== "A,B,C" || !["last", "mean", "min", "max", "sum"].includes(rule.data[1].model.reducer) || evaluator?.length !== 1 || !["gt", "lt"].includes(evaluator[0].evaluator?.type) || evaluator[0].evaluator.params?.length !== 1 || !Number.isFinite(evaluator[0].evaluator.params[0]) || !Number.isFinite(durationSeconds(rule.for)) || rule.keepFiringFor && durationSeconds(rule.keepFiringFor) !== 0) throw Error("Неподдерживаемое условие или recovery в replay");
+    if (rule.data.map(query => query.refId).join(",") !== "A,B,C" || !["last", "mean", "min", "max", "sum"].includes(rule.data[1].model.reducer) || evaluator?.length !== 1 || !thresholdOperators.includes(evaluator[0].evaluator?.type) || evaluator[0].evaluator.params?.length !== 1 || !Number.isFinite(evaluator[0].evaluator.params[0]) || !Number.isFinite(durationSeconds(rule.for)) || rule.keepFiringFor && durationSeconds(rule.keepFiringFor) !== 0) throw Error("Неподдерживаемое условие или recovery в replay");
     const source = rule.data[0].model, sql = source.rawSql;
     if (sql) {
       // SQL literals cannot safely be inspected with a keyword regexp: replay deliberately rejects doubtful queries.
@@ -485,7 +516,7 @@
         if (point.result.status === "error" || sample.status !== "ok") { unknown++; close(state, point.at, true); continue; }
         valid++;
         state.lastKnownAt = point.at;
-        const breach = operator === "lt" ? sample.value < threshold : sample.value > threshold;
+        const breach = thresholdBreach(sample.value, threshold, operator);
         if (!breach) { if (state.episode) transitions++; close(state, point.at, false); state.seenKnown = true; continue; }
         if (state.pendingAt === undefined) { state.pendingAt = point.at; state.pendingLeftCensored = !state.seenKnown; }
         if (!state.episode && point.at - state.pendingAt >= pendingSeconds * 1000) {
@@ -515,7 +546,7 @@
       try { result = await previewRule(request, rule, { at, signal: options.signal }); }
       catch (error) { if (options.signal?.aborted) throw error; if (error.status === 403) throw error; result = { status: "error", error: String(error.message || error.data?.message || "Ошибка eval").slice(0, 500) }; }
       if (result.status === "unsupported") throw Error(result.error);
-      if ((result.samples || []).some(sample => sample.status === "ok" && sample.condition !== (model.type === "lt" ? sample.value < model.params[0] : sample.value > model.params[0]))) throw Error("Backend condition отличается от threshold; локальный sweep не поддержан");
+      if ((result.samples || []).some(sample => sample.status === "ok" && sample.condition !== thresholdBreach(sample.value, model.params[0], model.type))) throw Error("Backend condition отличается от threshold; локальный sweep не поддержан");
       points.push({ at, result });
       if (options.onProgress) options.onProgress({ completed: points.length, total: plan.evaluations });
     }
@@ -592,7 +623,7 @@
       next.spec.title = title; next.spec.for = fields.for;
       if (fields.threshold !== undefined && fields.threshold !== "") {
         const rule = resourceRule(next), condition = next.spec.expressions[rule.condition]?.model;
-        if (condition?.type !== "threshold" || condition.conditions?.length !== 1 || condition.conditions[0].evaluator?.params?.length !== 1 || !["gt", "lt"].includes(condition.conditions[0].evaluator?.type) || !Number.isFinite(Number(fields.threshold))) throw Error("Порог доступен только для простого threshold gt/lt");
+        if (condition?.type !== "threshold" || condition.conditions?.length !== 1 || condition.conditions[0].evaluator?.params?.length !== 1 || !thresholdOperators.includes(condition.conditions[0].evaluator?.type) || !Number.isFinite(Number(fields.threshold))) throw Error("Порог доступен только для простого threshold gt/lt/gte/lte");
         condition.conditions[0].evaluator.params = [Number(fields.threshold)];
       }
       next.spec.paused = true;
@@ -748,5 +779,5 @@
   const triagePrompt = "Разбери выбранный алерт: что проверяет правило, состояние и экземпляры, когда началось срабатывание, какие факты доступны, гипотезы и следующие проверки. Отделяй условие от причины, а факт срабатывания от доставки уведомления. Если данные запросов ещё не получены, явно укажи это. Не изменяй правила и не создавай silence.";
   const overviewPrompt = "Дай короткую сводку активных экземпляров алертов по service/severity: количество, самые старые, что проверить первым. Отдельно укажи подавленные экземпляры и ограничения доступа/выборки. Не выдавай отсутствие доступа за отсутствие алертов. Не делай выводов об истории или доставке уведомлений без фактов.";
 
-  return { ruleUid, normalizeRule, stateRules, normalizeAlert, summarizeAlerts, linkedPanel, readContext, rulePanels, durationSeconds, timingActive, routePreview, readNotificationEvidence, notificationReport, auditRules, readAudit, auditMarkdown, canonical, validateDraft, buildRule, evaluateFrames, previewRule, planReplay, replayStatistics, replayRule, readCreationContext, verifyGroup, createPaused, appendCreationAudit, ruleResourcePath, resourceRule, readManagedRule, lifecycleCandidate, lifecyclePlan, lifecyclePatch, applyLifecycle, importDraft, yaml, silenceBody, previewSilence, applySilence, expireSilence, postgresTemplate, triagePrompt, overviewPrompt };
+  return { queryVariables, thresholdBreach, ruleUid, normalizeRule, stateRules, normalizeAlert, summarizeAlerts, linkedPanel, readContext, rulePanels, durationSeconds, timingActive, routePreview, readNotificationEvidence, notificationReport, auditRules, readAudit, auditMarkdown, canonical, validateDraft, buildRule, evaluateFrames, previewRule, planReplay, replayStatistics, replayRule, readCreationContext, verifyGroup, createPaused, appendCreationAudit, ruleResourcePath, resourceRule, readManagedRule, lifecycleCandidate, lifecyclePlan, lifecyclePatch, applyLifecycle, importDraft, yaml, silenceBody, previewSilence, applySilence, expireSilence, postgresTemplate, triagePrompt, overviewPrompt };
 });

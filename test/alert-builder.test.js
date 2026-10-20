@@ -20,6 +20,19 @@ test('builder emits deterministic paused A/reduce/threshold with inherited sourc
 test('builder rejects missing threshold, invalid sources, unresolved variables, writes and managed/active input', () => {
   for (const patch of [{ threshold: '' }, { threshold: Infinity }, { isPaused: false }, { provenance: 'file' }, { for: 'nonsense' }, { lookbackSeconds: 0 }, { reducer: 'math' }, { source: { ...draft.source, rawSql: 'DELETE FROM samples' } }, { source: { ...draft.source, rawSql: 'SELECT value FROM $table' } }]) assert.throws(() => a.buildRule({ ...draft, ...patch }, q.boundedSql));
 });
+test('inclusive threshold survives builder, replay plan, import and guarded threshold update', () => {
+  const to = Date.now() - 60000;
+  for (const operator of ['gte', 'lte']) {
+    const r = a.buildRule({ ...draft, operator }, q.boundedSql);
+    assert.equal(r.data[2].model.conditions[0].evaluator.type, operator);
+    assert.ok(a.planReplay(r, 60, to - 60000, to).evaluations > 0);
+    assert.equal(a.importDraft(JSON.stringify(r), 'imported-' + operator, q.boundedSql).operator, operator);
+    const resource = { kind: 'AlertRule', apiVersion: 'rules.alerting.grafana.app/v0alpha1', metadata: { name: r.uid, resourceVersion: '1' }, spec: { title: r.title, for: r.for, expressions: Object.fromEntries(r.data.map(query => [query.refId, { source: query.refId === 'C', datasourceUID: query.datasourceUid, model: query.model, relativeTimeRange: { from: query.relativeTimeRange.from + 's', to: '0s' } }])) } };
+    const updated = a.lifecycleCandidate({ rule: r, resource }, 'update', { title: 'Updated', for: '2m', threshold: '75' });
+    assert.equal(a.resourceRule(updated).data[2].model.conditions[0].evaluator.type, operator);
+    assert.equal(a.resourceRule(updated).data[2].model.conditions[0].evaluator.params[0], 75);
+  }
+});
 test('evaluation matches reduce/condition label sets and distinguishes error, noData and unsupported shape', () => {
   assert.equal(a.evaluateFrames(response(100)).samples[0].condition, true);
   assert.equal(a.evaluateFrames({ results: { A: { error: 'bad SQL' } } }).status, 'error');

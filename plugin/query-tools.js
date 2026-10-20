@@ -24,6 +24,28 @@
     }
     return result;
   }
+  function foldDiff(lines) {
+    const result = [];
+    for (let i = 0; i < lines.length;) {
+      let end = i + 1;
+      if (lines[i].type === 'equal') while (end < lines.length && lines[end].type === 'equal') end++;
+      if (lines[i].type === 'equal' && end - i > 4) result.push(...lines.slice(i, i + 2), { type: 'fold', lines: lines.slice(i + 2, end - 2) }, ...lines.slice(end - 2, end));
+      else result.push(...lines.slice(i, end));
+      i = end;
+    }
+    return result;
+  }
+  function localDateTime(iso) {
+    const d = new Date(iso);
+    if (!Number.isFinite(d.getTime())) return '';
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+  function localDateTimeIso(value) {
+    if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?$/.test(value)) return '';
+    const d = new Date(value), normalized = value.length === 16 ? value + ':00' : value;
+    return Number.isFinite(d.getTime()) && localDateTime(d) === normalized ? d.toISOString() : '';
+  }
   function mergeSelectedTargets(current, proposed, selected) {
     const ids = new Set(selected);
     const result = current.slice();
@@ -89,7 +111,7 @@
     if (!['select', 'with'].includes(tokens[0]?.value) || tokens[0].quoted) throw new Error('SQL-инструмент выполняет только SELECT или читающий WITH');
     const forbidden = new Set(['insert', 'update', 'delete', 'merge', 'into', 'copy', 'call', 'do', 'create', 'alter', 'drop', 'truncate', 'grant', 'revoke', 'vacuum', 'analyze', 'explain', 'set', 'reset', 'lock', 'listen', 'notify', 'unlisten', 'execute', 'prepare', 'deallocate', 'refresh', 'recursive', 'for']);
     const functions = new Set(('count sum avg min max abs round floor ceil ceiling trunc sqrt power mod coalesce nullif greatest least cast extract date_part date_trunc date_bin to_timestamp to_char to_date now current_timestamp timezone age make_interval lower upper length char_length substring substr trim btrim ltrim rtrim replace concat concat_ws split_part strpos position regexp_replace regexp_match regexp_matches bool_and bool_or every array_agg string_agg json_agg jsonb_agg json_build_object jsonb_build_object json_extract_path_text jsonb_extract_path_text json_array_length jsonb_array_length unnest generate_series percentile_cont percentile_disc mode stddev stddev_pop stddev_samp variance var_pop var_samp row_number rank dense_rank lag lead first_value last_value nth_value ntile numeric decimal varchar char text date timestamp timestamptz time interval smallint integer bigint int float float4 float8 boolean __timefrom __timeto __unixepochfrom __unixepochto __timefilter __timegroup __timegroupalias __time __timeepoch __unixepochfilter __unixepochgroup __unixepochgroupalias').split(' '));
-    const syntax = new Set(['as', 'in', 'not', 'over', 'filter', 'within', 'group', 'values', 'distinct', 'select', 'from', 'where', 'and', 'or', 'on', 'having', 'exists', 'any', 'all', 'when', 'then', 'else', 'join', 'lateral', 'using', 'union', 'intersect', 'except']);
+    const syntax = new Set(['as', 'in', 'not', 'over', 'filter', 'within', 'group', 'by', 'case', 'between', 'like', 'ilike', 'is', 'values', 'distinct', 'select', 'from', 'where', 'and', 'or', 'on', 'having', 'exists', 'any', 'all', 'when', 'then', 'else', 'join', 'lateral', 'using', 'union', 'intersect', 'except']);
     for (let i = 0; i < tokens.length; i++) {
       const { value, quoted } = tokens[i];
       if (value === ';' || (!quoted && forbidden.has(value))) throw new Error('SQL-инструмент отклонил команду: ' + value);
@@ -144,5 +166,5 @@
     const prev = text(vars(before)), curr = text(vars(after));
     return { panels: changed.slice(0, 50), totalChangedPanels: changed.length, truncated: changed.length > 50 || prev.length > 4000 || curr.length > 4000 || changed.some(panel => panel.changes.some(change => change.truncated) || panel.queries.some(query => query.truncated)), variables: prev === curr ? null : { before: prev.slice(0, 4000), after: curr.slice(0, 4000), truncated: prev.length > 4000 || curr.length > 4000 }, settings: ["title", "timezone", "time", "refresh"].filter(key => text(before[key]) !== text(after[key])).map(key => ({ field: key, before: before[key], after: after[key] })) };
   }
-  return { expression, targetId, diffLines, mergeSelectedTargets, diffTargetsList, selectedMergedTargets, boundedSql, postgresSchemaQuery, sqlFeedback, dashboardDiff };
+  return { expression, targetId, diffLines, foldDiff, localDateTime, localDateTimeIso, mergeSelectedTargets, diffTargetsList, selectedMergedTargets, boundedSql, postgresSchemaQuery, sqlFeedback, dashboardDiff };
 });

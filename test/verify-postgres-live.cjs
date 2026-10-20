@@ -98,6 +98,8 @@ function check(name) { report.checks.push(name); console.log('PASS ' + name); }
     await page.goto(root + '/d/' + uid + '?var-service=api&var-service=O%27Reilly', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#tech-ai-assistant-launcher');
     await page.waitForFunction(() => document.body.textContent.includes('Orders SQL'));
+    await require('./review-live-checks.cjs')({ page, api, uid, folderUid, from, to, check });
+    if (process.env.REVIEW_ONLY === '1') { report.ok = true; return; }
     const builder = await page.evaluate(async ({ uid, folderUid, to }) => {
       const plugin = await System.import('/crf/dashboard/public/plugins/tech-ai-assistant-app/module.js');
       const domain = await System.import('/crf/dashboard/public/plugins/tech-ai-assistant-app/alerting.js');

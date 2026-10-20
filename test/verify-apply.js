@@ -88,6 +88,7 @@ let testStage = 'launch';
     const dialogs = [];
     page.on('dialog', (dialog) => { dialogs.push(dialog.type()); dialog.accept(); });
     testStage = 'apply and reload';
+    await page.click('[data-testid="tech-ai-proposal-confirm"]');
     // History API changes also satisfy waitForNavigation, but do not reload the document.
     let documentLoaded = false, reloadListener, reloadTimer;
     const actualDocument = new Promise((resolve, reject) => {

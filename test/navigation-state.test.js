@@ -74,3 +74,15 @@ test('dashboard to Alerting switches to the rule and its PostgreSQL query withou
   assert.equal(state[2], 'tech-ai-chat:org-1:alert-r1'); assert.deepEqual(state[3], []);
   assert.equal(calls.length, 3); assert.ok(calls.every(call => call.options.method === 'GET' && !call.url.includes('/ds/query')));
 });
+test('one navigation listener and polling loop still detect template variables changed outside URL', async () => {
+  let value = 'before';
+  runtime.getTemplateSrv = () => ({ getVariables: () => [{ name: 'service', current: { value } }] });
+  try {
+    reset('/grafana/d/a/title'); await flush();
+    assert.equal(timers.size, 1); assert.equal(listeners.size, 1);
+    const url = location.href;
+    value = 'after'; for (const tick of [...timers]) tick(); await flush();
+    assert.equal(location.href, url); assert.ok(state[29].changes.includes('variables'));
+    assert.equal(state[29].after.variables.service, 'after');
+  } finally { delete runtime.getTemplateSrv; }
+});
