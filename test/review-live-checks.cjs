@@ -69,11 +69,15 @@ module.exports = async ({ page, api, uid, folderUid, from, to, check }) => {
   await page.screenshot({path:'test-results/review-silence-mobile.png'});
   const overflow=await page.$eval('#review-ui', n=>n.scrollWidth>n.clientWidth);assert.equal(overflow,false);
   check('Silence local datetime and four-hour preset work in Moscow timezone and mobile width');
+  await require('./hotfix-live-checks.cjs')({page,api,uid,from,to,check});
   await page.evaluate(()=>{window.reviewRoot.unmount();document.getElementById('tech-ai-assistant-drawer').remove();});
   await page.setViewport({width:1400,height:1000});
   const savedSettings = await api('/api/plugins/tech-ai-assistant-app/settings');
   const originalDashboard = await api('/api/dashboards/uid/' + uid);
-  let models = 0, writes = 0, dialogs = 0;
+  const multiDashboard=structuredClone(originalDashboard.dashboard);
+  multiDashboard.panels[0].targets.push({...multiDashboard.panels[0].targets[0],refId:'B',legendFormat:'preserve-B',interval:'2m'});
+  await api('/api/dashboards/db','POST',{dashboard:multiDashboard,folderUid});
+  let models = 0, writes = 0, dialogs = 0, unsafeQueries = 0;
   const protectedBytes = process.env.PROTECTED_REVIEW === '1' ? fs.readFileSync('protected/tech-ai-assistant-app/module.js') : undefined;
   let protectedResponses = 0;
   const diagnostics = [];
@@ -83,9 +87,10 @@ module.exports = async ({ page, api, uid, folderUid, from, to, check }) => {
   const correctedSql = 'SELECT created_at, amount, service FROM orders WHERE $__timeFilter(created_at) ORDER BY (amount)';
   const intercept = request => {
     const url=request.url();
+    if(url.endsWith('/api/ds/query')&&(request.postData()||'').includes('DELETE FROM orders'))unsafeQueries++;
     if(protectedBytes && /\/public\/plugins\/tech-ai-assistant-app\/module\.js(?:\?|$)/.test(url)) { protectedResponses++; return request.respond({status:200,contentType:'application/javascript',body:protectedBytes}); }
     if(url.endsWith('/api/plugins/tech-ai-assistant-app/settings') && request.method()==='GET') return request.respond({status:200,contentType:'application/json',body:JSON.stringify({...savedSettings,jsonData:{...savedSettings.jsonData,streaming:false,previewBeforeSend:'never',includePanelData:false}})});
-    if(url.includes('/api/plugin-proxy/tech-ai-assistant-app/') && request.method()==='POST') { models++; return request.respond({status:200,contentType:'application/json',body:JSON.stringify({choices:[{message:{content:'```sql\n'+(models===1?'SELECT missing_review_column FROM orders':correctedSql)+'\n```'}}]})}); }
+    if(url.includes('/api/plugin-proxy/tech-ai-assistant-app/') && request.method()==='POST') { models++; return request.respond({status:200,contentType:'application/json',body:JSON.stringify({choices:[{message:{content:'```sql\n'+(models===1?'DELETE FROM orders':models===2?'SELECT missing_review_column FROM orders':correctedSql)+'\n```'}}]})}); }
     if(url.endsWith('/api/dashboards/db') && request.method()==='POST') writes++;
     return request.continue();
   };
@@ -98,14 +103,28 @@ module.exports = async ({ page, api, uid, folderUid, from, to, check }) => {
     await page.type('[data-testid="tech-ai-composer"] textarea','Review SQL fixture');
     await page.click('[data-testid="tech-ai-composer"] button[aria-label="Отправить"]');
     await page.waitForSelector('[data-testid="tech-ai-try-panel"]');
-    await page.click('[data-testid="tech-ai-try-panel"]');await page.click('[data-testid="tech-ai-validate-proposal"]');
-    await page.waitForSelector('[data-testid="tech-ai-repair-proposal"]');await page.click('[data-testid="tech-ai-repair-proposal"]');
-    const repairDraft=await page.$eval('[data-testid="tech-ai-composer"] textarea',n=>n.value);
-    assert.match(repairDraft,/missing_review_column/);assert.match(repairDraft,/фактической ошибке/);assert.equal(models,1);assert.equal(writes,0);
-    check('Actual Assistant repair button prepares factual query/error draft without another model call or write');
-    await page.click('[data-testid="tech-ai-composer"] button[aria-label="Отправить"]');
+    await page.click('[data-testid="tech-ai-try-panel"]');
+    assert.equal(await page.$('[data-testid="tech-ai-validate-proposal"]'),null);
+    await page.select('[data-testid="tech-ai-proposal-target"]','B');await page.click('[data-testid="tech-ai-validate-proposal"]');
+    await page.waitForFunction(()=>document.querySelector('[data-testid="tech-ai-validation-result"]')?.textContent.includes('только SELECT'));
+    assert.equal(await page.$('[data-testid="tech-ai-code-header"] a'),null);
+    await page.click('[data-testid="tech-ai-proposal-confirm"]');await page.click('[data-testid="tech-ai-apply-proposal"]');
+    await page.waitForFunction(()=>document.querySelector('[data-testid="tech-ai-error"]')?.textContent.includes('только SELECT')||document.querySelector('#tech-ai-assistant-drawer')?.textContent.includes('Ошибка применения: SQL-инструмент выполняет только SELECT'));
+    assert.equal(writes,0);assert.equal(unsafeQueries,0);
+    check('Full Assistant rejects model DELETE in preview and confirmed apply; no unsafe Explore link or dashboard write');
+    await page.type('[data-testid="tech-ai-composer"] textarea','Предложи SELECT для исправления');await page.click('[data-testid="tech-ai-composer"] button[aria-label="Отправить"]');
     await page.waitForFunction(()=>document.querySelectorAll('[data-testid="tech-ai-try-panel"]').length===2);
     await page.$$eval('[data-testid="tech-ai-try-panel"]',nodes=>nodes.at(-1).click());
+    await page.$$eval('[data-testid="tech-ai-proposal-target"]',nodes=>{const node=nodes.at(-1);node.value='B';node.dispatchEvent(new Event('change',{bubbles:true}));});
+    await page.$$eval('[data-testid="tech-ai-validate-proposal"]',nodes=>nodes.at(-1).click());
+    await page.waitForSelector('[data-testid="tech-ai-repair-proposal"]');await page.click('[data-testid="tech-ai-repair-proposal"]');
+    const repairDraft=await page.$eval('[data-testid="tech-ai-composer"] textarea',n=>n.value);
+    assert.match(repairDraft,/missing_review_column/);assert.match(repairDraft,/фактической ошибке/);assert.equal(models,2);assert.equal(writes,0);
+    check('Actual Assistant repair button prepares factual query/error draft without another model call or write');
+    await page.click('[data-testid="tech-ai-composer"] button[aria-label="Отправить"]');
+    await page.waitForFunction(()=>document.querySelectorAll('[data-testid="tech-ai-try-panel"]').length===3);
+    await page.$$eval('[data-testid="tech-ai-try-panel"]',nodes=>nodes.at(-1).click());
+    await page.$$eval('[data-testid="tech-ai-proposal-target"]',nodes=>{const node=nodes.at(-1);node.value='B';node.dispatchEvent(new Event('change',{bubbles:true}));});
     await page.$$eval('[data-testid="tech-ai-validate-proposal"]',nodes=>nodes.at(-1).click());
     await page.waitForFunction(()=>[...document.querySelectorAll('[data-testid="tech-ai-validation-result"]')].at(-1)?.textContent.includes('Запросы выполнены'));
     await page.$$eval('[data-testid="tech-ai-proposal-confirm"]',nodes=>nodes.at(-1).click());
@@ -115,13 +134,13 @@ module.exports = async ({ page, api, uid, folderUid, from, to, check }) => {
     await page.$$eval('[data-testid="tech-ai-validate-proposal"]',nodes=>nodes.at(-1).click());
     await page.waitForFunction(()=>[...document.querySelectorAll('[data-testid="tech-ai-validation-result"]')].at(-1)?.textContent.includes('Запросы выполнены'));
     check('Changing dashboard time clears proposal validation and confirmation before rechecking');
-    const concurrent=structuredClone(originalDashboard.dashboard);concurrent.panels[0].targets[0].rawSql+=' /* concurrent fixture */';
+    const concurrent=(await api('/api/dashboards/uid/'+uid)).dashboard;concurrent.panels[0].targets[1].rawSql+=' /* concurrent fixture */';
     await api('/api/dashboards/db','POST',{dashboard:concurrent,folderUid});
     await page.$$eval('[data-testid="tech-ai-proposal-confirm"]',nodes=>nodes.at(-1).click());
     await page.$$eval('[data-testid="tech-ai-apply-proposal"]',nodes=>nodes.at(-1).click());
     await page.waitForFunction(()=>document.querySelector('#tech-ai-assistant-drawer').textContent.includes('Запросы панели изменились'));
     assert.equal(writes,0);assert.equal(dialogs,0);
-    const latest=await api('/api/dashboards/uid/'+uid);latest.dashboard.panels[0].targets=originalDashboard.dashboard.panels[0].targets;
+    const latest=await api('/api/dashboards/uid/'+uid);latest.dashboard.panels[0].targets=multiDashboard.panels[0].targets;
     await api('/api/dashboards/db','POST',{dashboard:latest.dashboard,folderUid});
     await page.$$eval('[data-testid="tech-ai-proposal-confirm"]',nodes=>nodes.at(-1).click());
     let reloadTimer, loaded;
@@ -130,8 +149,8 @@ module.exports = async ({ page, api, uid, folderUid, from, to, check }) => {
     finally {clearTimeout(reloadTimer);page.off('domcontentloaded',loaded);}
     await page.waitForSelector('#tech-ai-assistant-launcher',{timeout:60000});
     const updated=await api('/api/dashboards/uid/'+uid);
-    assert.equal(updated.dashboard.panels[0].targets[0].rawSql,correctedSql);assert.equal(updated.dashboard.panels[0].targets[0].format,'table');assert.equal(writes,1);assert.equal(dialogs,0);
-    check('Inline confirmation blocks stale target changes; confirmed retry saves once and Grafana reloads actual SQL');
+    assert.equal(updated.dashboard.panels[0].targets[0].rawSql,originalDashboard.dashboard.panels[0].targets[0].rawSql);assert.equal(updated.dashboard.panels[0].targets[1].rawSql,correctedSql);assert.equal(updated.dashboard.panels[0].targets[1].format,'table');assert.equal(updated.dashboard.panels[0].targets[1].legendFormat,'preserve-B');assert.equal(writes,1);assert.equal(dialogs,0);
+    check('Explicit target B selection preserves A/options; inline confirmation blocks stale changes and saves once');
     await page.click('#tech-ai-assistant-launcher');await page.waitForSelector('[data-testid="tech-ai-composer"] textarea:not([disabled])');
     await page.setViewport({width:390,height:844});
     await page.click('[data-testid="tech-ai-scope-chip"]');await page.click('[data-testid="tech-ai-chat-panel-toggle"]');
@@ -145,7 +164,7 @@ module.exports = async ({ page, api, uid, folderUid, from, to, check }) => {
     if(protectedBytes) { assert.ok(protectedResponses>=2); check('Full review Assistant scenario uses exact protected AMD bytes, including reload after actual save'); }
     await page.click('#tech-ai-assistant-launcher');
   } finally {
-    fs.writeFileSync('test-results/review-ui-diagnostics'+(protectedBytes?'-protected':'')+'.json',JSON.stringify({url:page.url(),models,writes,dialogs,diagnostics,protectedResponses,moduleSHA256:protectedBytes?require('node:crypto').createHash('sha256').update(protectedBytes).digest('hex'):undefined},null,2));
+    fs.writeFileSync('test-results/review-ui-diagnostics'+(protectedBytes?'-protected':'')+'.json',JSON.stringify({url:page.url(),models,writes,dialogs,unsafeQueries,diagnostics,protectedResponses,moduleSHA256:protectedBytes?require('node:crypto').createHash('sha256').update(protectedBytes).digest('hex'):undefined},null,2));
     page.off('pageerror',pageError);page.off('requestfailed',failed);
     page.off('request',intercept);page.off('dialog',dialog);await page.setRequestInterception(false);
     const latest=await api('/api/dashboards/uid/'+uid);

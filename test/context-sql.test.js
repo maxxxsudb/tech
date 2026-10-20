@@ -72,7 +72,7 @@ test('proposal validation inherits the same PostgreSQL target options as apply',
   const result = await api.__features.validateDashboardProposal(t.defaults, context, { panelId: 1, selectedTargets: { ids: ['A'], targets: [{ refId: 'A', rawSql: 'select new' }] } });
   assert.equal(result.ok, true); assert.equal(result.details[0].rows, 2); assert.equal(result.details[0].series, 0);
   for (const field of ['format', 'editorMode', 'rawQuery']) assert.equal(actual[0][field], target[field]);
-  assert.equal(actual[0].rawSql, 'select new');
+  assert.equal(actual[0].rawSql, require('../plugin/query-tools').boundedSql('select new').rawSql);
 });
 
 test('both prompt delivery modes mark context as untrusted without disabling tools', () => {

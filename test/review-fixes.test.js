@@ -7,8 +7,8 @@ global.define = (_, fn) => { factory = fn; };
 delete require.cache[require.resolve('../plugin/module')]; require('../plugin/module'); delete global.define;
 class AppPlugin { constructor() { const p = new Proxy(this, { get: () => () => p }); return p; } }
 const pg = { uid: 'pg', type: 'grafana-postgresql-datasource' };
-let saved = [], actual;
-const runtime = { config: {}, getDataSourceSrv: () => ({ getInstanceSettings: () => pg }), getBackendSrv: () => ({ get: async () => ({ dashboard: { uid: 'd', panels: [actual] }, meta: { canSave: true } }), post: async (...args) => saved.push(args) }) };
+let saved = [], actual, reads = 0;
+const runtime = { config: {}, getDataSourceSrv: () => ({ getInstanceSettings: () => pg }), getBackendSrv: () => ({ get: async () => { reads++; return { dashboard: { uid: 'd', panels: [actual] }, meta: { canSave: true } }; }, post: async (...args) => saved.push(args) }) };
 const api = factory({ AppPlugin }, runtime, {}, {}, require('../plugin/attachments'), require('../plugin/conversation'), q, {}, a);
 const source = { refId: 'B', datasource: pg, rawSql: 'SELECT 1', format: 'time_series', interval: '1m', custom: 'preserve' };
 const panel = { id: 1, datasource: pg, targets: [source] }, context = { dashboardUid: 'd', panels: [panel] }, settings = api.__test.defaults;
@@ -71,4 +71,65 @@ test('apply compares the displayed original targets against current server query
   actual={...panel,targets:[source,{...other,rawSql:'SELECT 8'}]};saved=[];
   await api.__features.applyDashboardProposal(settings,context,{...proposal,expectedTargets:[source,other],selectedTargets:{targets:proposal.targets,ids:['B']}});
   assert.equal(saved[0][1].dashboard.panels[0].targets[1].rawSql,'SELECT 8');
+});
+test('SQL proposal rejects writes and unreviewed calls before any datasource fetch or dashboard GET/POST', async () => {
+  const originalFetch=global.fetch;let fetches=0;
+  global.fetch=async()=>{fetches++;throw Error('Unexpected network');};
+  try {
+    for(const rawSql of ['DELETE FROM users','UPDATE users SET active=false','WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x','SELECT 1; DROP TABLE users','SELECT nextval(\'seq\')','SELECT pg_sleep(1)','SELECT custom_function(1)']) for(const datasource of [undefined,pg,'pg',{uid:'pg',type:'prometheus'}]) {
+      reads=0;saved=[];actual=structuredClone(panel);
+      const target={refId:'B',rawSql,...(datasource?{datasource}:{})}, proposal={panelId:1,targets:[target]};
+      await assert.rejects(api.__features.validateDashboardProposal(settings,context,proposal));
+      await assert.rejects(api.__features.applyDashboardProposal(settings,context,proposal));
+      assert.equal(fetches,0);assert.equal(reads,0);assert.equal(saved.length,0);
+      assert.equal(api.__test.exploreUrl(context,pg,target),undefined);
+    }
+    assert.equal(api.__test.exploreUrl(context,pg,{rawSql:'SELECT * FROM ${table:raw}'}),undefined);
+  } finally {global.fetch=originalFetch;}
+});
+test('SQL proposal rechecks interpolated variables before query and save', async()=>{
+  const original=runtime.getDataSourceSrv,oldFetch=global.fetch;let fetches=0;reads=0;saved=[];
+  runtime.getDataSourceSrv=()=>({getInstanceSettings:()=>pg,get:async()=>({getRef:()=>pg,interpolateVariablesInQueries:queries=>queries.map(query=>({...query,rawSql:query.rawSql.replace('$table','orders; DELETE FROM users')}))})});
+  global.fetch=async()=>{fetches++;throw Error('Unexpected query');};
+  try {
+    const proposal={panelId:1,targets:[{...source,rawSql:'SELECT * FROM $table'}]};
+    await assert.rejects(api.__features.validateDashboardProposal(settings,context,proposal));
+    await assert.rejects(api.__features.applyDashboardProposal(settings,context,proposal));
+    assert.equal(fetches,0);assert.equal(reads,0);assert.equal(saved.length,0);
+  } finally {runtime.getDataSourceSrv=original;global.fetch=oldFetch;}
+});
+test('preview executes bounded raw SQL with original format; apply retains full original SQL', async()=>{
+  const originalFetch=global.fetch;let body;
+  global.fetch=async(_url,options)=>{body=JSON.parse(options.body);return new Response(JSON.stringify({results:{B:{frames:[]}}}));};
+  try {
+    const proposal={panelId:1,targets:[{...source,rawSql:'SELECT 2',rawQuery:false}]};
+    await api.__features.validateDashboardProposal(settings,context,proposal);
+    assert.match(body.queries[0].rawSql,/LIMIT 101$/);assert.equal(body.queries[0].format,'time_series');assert.equal(body.queries[0].rawQuery,true);
+    saved=[];actual=structuredClone(panel);await api.__features.applyDashboardProposal(settings,context,proposal);
+    assert.equal(saved[0][1].dashboard.panels[0].targets[0].rawSql,'SELECT 2');
+  } finally {global.fetch=originalFetch;}
+});
+test('UUID fallback is v4 and uses cryptographic randomness without randomUUID',()=>{
+  const crypto=require('node:crypto').webcrypto,ids=Array.from({length:100},()=>q.uniqueId({getRandomValues:bytes=>crypto.getRandomValues(bytes)}));
+  assert.equal(new Set(ids).size,100);assert.ok(ids.every(id=>/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id)));
+  assert.throws(()=>q.uniqueId({}),/ID/);
+});
+test('invalid local time remains distinguishable from an intentionally empty incident time',()=>{
+  const original=process.env.TZ;try{process.env.TZ='America/New_York';assert.match(q.localTimeError('2026-03-08T02:30',false,false),/не существует/);assert.equal(q.localTimeError('',false,false),'');assert.ok(q.localTimeError('',true,false));assert.ok(q.localTimeError('',false,true));}finally{if(original===undefined)delete process.env.TZ;else process.env.TZ=original;}
+});
+test('multi-query code proposal requires explicit target, preserves its options and leaves other targets intact',()=>{
+  const second={...source,refId:'C',format:'table',rawSql:'SELECT 7'},multi={...context,panels:[{...panel,targets:[source,second]}]};
+  assert.equal(api.__features.codeProposal(multi,[1],'sql','SELECT 8',settings),undefined);
+  const proposal=api.__features.codeProposal(multi,[1],'sql','SELECT 8',settings,'C');
+  assert.equal(proposal.targets[0].format,'table');assert.equal(proposal.targets[0].refId,'C');assert.equal(proposal.targets[0].rawSql,'SELECT 8');assert.equal(second.rawSql,'SELECT 7');
+  assert.equal(api.__features.codeProposal({...context,panels:[{...panel,targets:[source,{...second,refId:undefined}]}]},[1],'sql','SELECT 8',settings,'__target_1'),undefined);
+});
+test('repair draft caps long SQL, keeps error first and explicitly marks truncation',()=>{
+  const validation={range:{from:1,to:2},details:[{refId:'B',error:'missing column 42703',query:{rawSql:'SELECT '+ 'field,'.repeat(3900)+'tail'}}]};
+  const prompt=api.__features.repairPrompt(validation,settings);
+  assert.ok(prompt.length<=8000);assert.match(prompt,/missing column 42703/);assert.match(prompt,/сокращён/);assert.ok(validation.details[0].query.rawSql.endsWith('tail'));
+});
+test('curated JSON/array/string functions remain readable while I/O, state and unreviewed functions stay blocked',()=>{
+  for(const sql of ["SELECT to_jsonb(orders) FROM orders", "SELECT jsonb_path_query('[1,2]'::jsonb, '$[*]')",'SELECT array_length(ARRAY[1,2],1)',"SELECT string_to_array('a,b', ',')","SELECT regexp_split_to_table('a,b', ',')","SELECT format('%s', 'SELECT; DELETE')"]) assert.doesNotThrow(()=>q.boundedSql(sql),sql);
+  for(const sql of ["SELECT pg_read_file('x')","SELECT dblink('x','y')","SELECT lo_import('x')","SELECT set_config('x','y',false)","SELECT nextval('s')","SELECT setval('s',1)",'SELECT public.to_jsonb(1)','SELECT arbitrary_function(1)']) assert.throws(()=>q.boundedSql(sql),sql);
 });

@@ -105,6 +105,7 @@ try {
     window.__operationsRoot.render(React.createElement(plugin.__features.AlertSilences, { context: { alerting: { instances: [{ labels: { service: uid } }] } } }));
   }, uid);
   await page.click('[data-testid="tech-ai-alert-silences"] > summary');
+  await page.click('[data-testid="tech-ai-silence-duration-1"]');
   await page.$eval('[data-testid="tech-ai-silence-comment"]', el => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'Temporary UI silence verification'); el.dispatchEvent(new Event('input', { bubbles: true })); });
   await page.click('[data-testid="tech-ai-silence-preview"]'); await page.waitForSelector('[data-testid="tech-ai-silence-impact"]');
   assert.equal(await page.$eval('[data-testid="tech-ai-silence-apply"]', el => el.disabled), true);

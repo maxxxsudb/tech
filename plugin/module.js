@@ -2,7 +2,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
   "use strict";
 
   const PLUGIN_ID = "tech-ai-assistant-app";
-  const PLUGIN_VERSION = "0.9.10";
+  const PLUGIN_VERSION = "0.9.11";
   const COMPONENT_TITLE = "Tech AI Assistant";
   const SIDEBAR_TARGET = "grafana/extension-sidebar/v0-alpha";
   const PANEL_MENU_TARGET = "grafana/dashboard/panel/menu";
@@ -1611,9 +1611,38 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     return panels.find((panel) => Number(panel.id) === Number(proposal.panelId));
   }
 
+  function proposalSqlTargets(panel, targets, context, bounded) {
+    if (!Array.isArray(targets) || !targets.length) throw Error('Нет выбранных запросов предложения');
+    const sources = contextDatasources(context);
+    return targets.map((target, index) => {
+      const before = target.refId ? (panel.targets || []).find(item => item.refId === target.refId) : (panel.targets || [])[index];
+      const merged = Object.assign({}, before, target);
+      const datasource = merged.datasource || panel.datasource;
+      const uid = typeof datasource === 'string' ? datasource : datasource?.uid;
+      let source = sources.get(uid);
+      if (!source?.type) source = grafanaRuntime.getDataSourceSrv?.().getInstanceSettings?.(uid) || source;
+      if (source?.type === 'grafana-postgresql-datasource' || datasource?.type === 'grafana-postgresql-datasource' || Object.hasOwn(merged, 'rawSql')) {
+        const checked = queryTools.boundedSql(merged.rawSql, 100);
+        if (bounded) Object.assign(merged, { rawSql: checked.rawSql, rawQuery: true, editorMode: 'code' });
+      }
+      return Object.assign(merged, { datasource: source ? { uid: source.uid || uid, type: source.type } : datasource });
+    });
+  }
+
+  async function assertInterpolatedProposalSql(panel, targets, context) {
+    const prepared = proposalSqlTargets(panel, targets, context, false);
+    const interpolated = await Promise.all(prepared.map(interpolateQuery));
+    proposalSqlTargets(panel, interpolated, context, false);
+    return interpolated;
+  }
+
   async function applyDashboardProposal(settings, context, proposal) {
     if (context.isAlerting) throw new Error("Из Alerting изменения дашборда не применяются. Откройте исходную панель.");
     if (!context.dashboardUid) throw new Error("Изменение возможно только для сохранённого дашборда");
+    const originalPanel = panelForProposal(context, proposal);
+    if (!originalPanel) throw Error('Панель предложения отсутствует в текущем контексте');
+    const selected = proposal.selectedTargets ? queryTools.selectedMergedTargets(originalPanel.targets || [], proposal.selectedTargets.targets, proposal.selectedTargets.ids) : proposal.targets;
+    await assertInterpolatedProposalSql(originalPanel, selected, context);
     const response = await grafanaRuntime.getBackendSrv().get(`/api/dashboards/uid/${encodeURIComponent(context.dashboardUid)}`);
     if (response.meta && response.meta.canSave === false) throw new Error("У пользователя нет права сохранять этот дашборд");
     const dashboard = response.dashboard;
@@ -1631,6 +1660,8 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       if (uid && !existingUids.has(uid)) throw new Error(`AI попытался заменить datasource на ${uid}; изменение заблокировано`);
       if (!isDatasourceAllowed(settings, panel, target)) throw new Error(`Datasource ${uid} не входит в allowlist`);
     });
+    const changed = proposal.selectedTargets ? queryTools.selectedMergedTargets(panel.targets || [], proposal.selectedTargets.targets, proposal.selectedTargets.ids) : targets;
+    await assertInterpolatedProposalSql(panel, changed, Object.assign({}, context, { panel: undefined, panels: [panel] }));
     panel.targets = targets;
     try {
       await grafanaRuntime.getBackendSrv().post("/api/dashboards/db", {
@@ -1655,12 +1686,14 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const limit = positiveInt(settings.maxTargetsPerPanel, defaults.maxTargetsPerPanel, 20);
     if (!Array.isArray(targets) || !targets.length || targets.length > limit) throw new Error(`Для проверки выберите от 1 до ${limit} запросов`);
     const sources = contextDatasources(context);
-    const queries = await Promise.all(targets.map((target, index) => {
+    const checkedTargets = proposalSqlTargets(panel, targets, context, false);
+    const interpolated = await Promise.all(checkedTargets.map((target, index) => {
       const datasource = target.datasource || panel.datasource || (panel.targets || []).find(item => item.refId === target.refId)?.datasource;
       const uid = typeof datasource === "string" ? datasource : datasource && datasource.uid;
       if (!uid || !sources.has(uid) || !isDatasourceAllowed(settings, panel, { datasource })) throw new Error("Проверка не может использовать новый или запрещённый datasource");
       return interpolateQuery(Object.assign({}, target, { datasource: sources.get(uid), refId: target.refId || String.fromCharCode(65 + index), maxDataPoints: 100, maxLines: 5, limit: 5 }));
     }));
+    const queries = proposalSqlTargets(panel, interpolated, context, true);
     const range = limitedRange(context, settings.aiQueryMaxRangeHours);
     const results = await runDatasourceQueries(context, queries, { range, timeoutMs: Math.min(queryTimeoutMs(settings) || 10000, 10000), signal: options.signal });
     const details = queries.map(query => {
@@ -2443,6 +2476,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
 
   function exploreUrl(context, datasource, query) {
     if (!datasource || !datasource.uid) return undefined;
+    if (datasource.type === 'grafana-postgresql-datasource' || Object.hasOwn(query || {}, 'rawSql')) {
+      try { queryTools.boundedSql(query?.rawSql); if (alertingTools.queryVariables({rawSql:query.rawSql}).sql.length) return undefined; } catch (_) { return undefined; }
+    }
     const range = (context && context.timeRange) || {};
     const panes = { a: { datasource: datasource.uid, queries: [Object.assign({ refId: "A" }, query, { datasource: { type: datasource.type, uid: datasource.uid } })], range: { from: range.from || "now-1h", to: range.to || "now" } } };
     return `${appSubUrl()}/explore?schemaVersion=1&orgId=${orgId() || 1}&panes=${encodeURIComponent(JSON.stringify(panes))}`;
@@ -2489,13 +2525,28 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     return sanitizeForAI(payload);
   }
 
-  function codeProposal(context, selectedIds, lang, code, settings) {
-    if (!context?.dashboardUid || context.isAlerting || context.isExplore || selectedIds?.length !== 1 || !['sql', 'postgresql', 'promql', 'logql'].includes(lang) || !code.trim() || code.length > 20000) return;
+  function codeProposalCandidates(context, selectedIds, lang, code, settings) {
+    if (!context?.dashboardUid || context.isAlerting || context.isExplore || selectedIds?.length !== 1 || !['sql', 'postgresql', 'promql', 'logql'].includes(lang) || !code.trim() || code.length > 20000 || !settings) return [];
     const panel = availablePanels(context).find(item => Number(item.id) === Number(selectedIds[0]));
-    if (!panel || panel.targets?.length !== 1 || panel.targets[0].hide) return;
-    const target = panel.targets[0], source = contextDatasources(context).get(datasourceUid(panel, target));
-    if (!source || source.type !== languageDatasourceTypes[lang] || !settings || !isDatasourceAllowed(settings, panel, target)) return;
-    return { panelId: Number(panel.id), targets: [Object.assign({}, target, lang === 'sql' || lang === 'postgresql' ? { rawSql: code, rawQuery: true, editorMode: 'code' } : { expr: code })] };
+    if (!panel || !Array.isArray(panel.targets) || new Set(panel.targets.map(queryTools.targetId)).size !== panel.targets.length) return [];
+    const sources = contextDatasources(context);
+    return panel.targets.flatMap((target, index) => {
+      const source = sources.get(datasourceUid(panel, target));
+      const stableRef = panel.targets.length === 1 || typeof target.refId === 'string' && target.refId.trim() && !target.refId.startsWith('__target_');
+      return stableRef && !target.hide && source?.type === languageDatasourceTypes[lang] && isDatasourceAllowed(settings, panel, target) ? [{ id: queryTools.targetId(target, index), panelId: Number(panel.id), target: Object.assign({}, target, lang === 'sql' || lang === 'postgresql' ? { rawSql: code, rawQuery: true, editorMode: 'code' } : { expr: code }) }] : [];
+    });
+  }
+  function codeProposal(context, selectedIds, lang, code, settings, targetId) {
+    const candidates = codeProposalCandidates(context, selectedIds, lang, code, settings);
+    const chosen = targetId === undefined && candidates.length === 1 ? candidates[0] : candidates.find(item => item.id === targetId);
+    return chosen ? { panelId: chosen.panelId, targets: [chosen.target] } : undefined;
+  }
+  function repairPrompt(validation, settings) {
+    const cap = Math.min(8000, Math.max(1000, Math.floor((Number(settings?.contextTokens) || defaults.contextTokens) * .7)));
+    const header = 'Исправь проверенный запрос по фактической ошибке datasource. Сохрани смысл и datasource. Верни исправленный запрос; ничего не применяй.\nПериод проверки: ' + JSON.stringify(validation.range) + '\n';
+    const payload = JSON.stringify(sanitizeForAI(validation.details.filter(item => item.error).map(item => ({ refId: item.refId, error: String(item.error).slice(0, 1000), query: item.query }))), null, 2);
+    const marker = '\n[Запрос/отчёт сокращён. Полный текст доступен в исходном сообщении. Не восстанавливай пропущенный SQL догадками.]';
+    return header + (header.length + payload.length <= cap ? payload : payload.slice(0, Math.max(0, cap - header.length - marker.length)) + marker);
   }
 
   function QueryDiff(props) {
@@ -2507,8 +2558,10 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const [copyStatus, setCopyStatus] = React.useState("");
     const [sqlExploreQuery, setSqlExploreQuery] = React.useState();
     const [trying, setTrying] = React.useState(false);
-    const proposal = codeProposal(props.context, props.selectedPanelIds, props.lang, props.code, props.settings);
-    React.useEffect(() => setTrying(false), [props.code, props.context?.dashboardUid, JSON.stringify(props.selectedPanelIds)]);
+    const [targetChoice, setTargetChoice] = React.useState('');
+    const candidates = codeProposalCandidates(props.context, props.selectedPanelIds, props.lang, props.code, props.settings);
+    const proposal = codeProposal(props.context, props.selectedPanelIds, props.lang, props.code, props.settings, candidates.length === 1 ? undefined : targetChoice);
+    React.useEffect(() => { setTrying(false); setTargetChoice(''); }, [props.code, props.context?.dashboardUid, JSON.stringify(props.selectedPanelIds), JSON.stringify(candidates.map(item => item.id))]);
     const timer = React.useRef(null);
     React.useEffect(() => () => clearTimeout(timer.current), []);
     const datasource = datasourceForLanguage(props.context, props.lang);
@@ -2525,10 +2578,11 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
         h("span", { style: Object.assign({}, styles.context, { marginRight: "auto", whiteSpace: "nowrap", flexShrink: 0, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" }), title: (props.lang || "Запрос").toUpperCase() }, (props.lang || "Запрос").toUpperCase()),
         h("button", { type: "button", style: Object.assign({}, styles.smallButton, { whiteSpace: "nowrap", flexShrink: 0 }), "data-testid": "tech-ai-copy-code", onClick: async () => { setCopyStatus(await copyText(props.code) ? "Скопировано" : "Не удалось"); clearTimeout(timer.current); timer.current = setTimeout(() => setCopyStatus(""), 1800); } }, copyStatus || "Копировать"),
         url ? h("a", { href: url, target: "_blank", rel: "noreferrer", style: Object.assign({}, styles.smallButton, { display: "inline-flex", alignItems: "center", textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }) }, "Открыть в Explore") : null,
-        proposal && props.onApply ? h('button', { type: 'button', style: styles.smallButton, disabled: props.busy, 'data-testid': 'tech-ai-try-panel', onClick: () => setTrying(value => !value), 'aria-expanded': trying }, trying ? 'Скрыть примерку' : 'Примерить к панели') : null
+        candidates.length && props.onApply ? h('button', { type: 'button', style: styles.smallButton, disabled: props.busy, 'data-testid': 'tech-ai-try-panel', onClick: () => setTrying(value => !value), 'aria-expanded': trying }, trying ? 'Скрыть примерку' : 'Примерить к панели') : null
       ),
       h("pre", { style: Object.assign({}, styles.pre, { borderRadius: 0, background: "rgba(128,128,128,.06)", whiteSpace: "pre", wordBreak: "normal", overflowWrap: "normal", padding: "12px" }) }, h("code", { style: { whiteSpace: "pre", wordBreak: "normal", overflowWrap: "normal", fontSize: "inherit" } }, props.code)),
-      trying && proposal ? h(ProposalView, { proposal, panel: panelForProposal(props.context, proposal), context: props.context, settings: props.settings, busy: props.busy, onApply: props.onApply, onRepair: props.onRepair }) : null
+      trying && candidates.length > 1 ? h('label', { style: styles.field }, 'Запрос панели', h('select', { style: styles.input, value: targetChoice, disabled: props.busy, 'data-testid': 'tech-ai-proposal-target', onChange: event => setTargetChoice(event.target.value) }, h('option', { value: '' }, 'Выберите запрос'), candidates.map(item => h('option', { key: item.id, value: item.id }, item.target.refId || item.id)))) : null,
+      trying && proposal ? h(ProposalView, { key: proposal.targets[0].refId || targetChoice, proposal, panel: panelForProposal(props.context, proposal), context: props.context, settings: props.settings, busy: props.busy, onApply: props.onApply, onRepair: props.onRepair }) : null
     );
   }
 
@@ -2953,7 +3007,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const panel = availablePanels(props.context)[0];
     const targets = panelTargets(props.settings, panel);
     const [targetIndex, setTargetIndex] = React.useState(0);
-    const [draft, setDraft] = React.useState(() => props.context.importedDraft || ({ uid: "ai-" + crypto.randomUUID().replace(/-/g, "").slice(0, 28), title: panel.title || "New alert", folderUID: "", ruleGroup: "", reducer: "last", operator: "gt", threshold: "", for: "5m", intervalSeconds: 60, lookbackSeconds: 600, labels: { severity: "warning" }, annotations: Object.assign({ summary: panel.title || "" }, props.context.dashboardUid ? { __dashboardUid__: props.context.dashboardUid, __panelId__: String(panel.id) } : {}), source: {} }));
+    const [draft, setDraft] = React.useState(() => props.context.importedDraft || ({ uid: "ai-" + queryTools.uniqueId().replace(/-/g, "").slice(0, 28), title: panel.title || "New alert", folderUID: "", ruleGroup: "", reducer: "last", operator: "gt", threshold: "", for: "5m", intervalSeconds: 60, lookbackSeconds: 600, labels: { severity: "warning" }, annotations: Object.assign({ summary: panel.title || "" }, props.context.dashboardUid ? { __dashboardUid__: props.context.dashboardUid, __panelId__: String(panel.id) } : {}), source: {} }));
     const [placement, setPlacement] = React.useState();
     const [group, setGroup] = React.useState();
     const [preview, setPreview] = React.useState();
@@ -3206,7 +3260,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       h("details", null, h("summary", { style: { cursor: "pointer" } }, "Импорт Grafana JSON"),
         h("div", { style: styles.context }, "Одно правило A → reduce B → threshold C. Новый UID, выбор существующей группы, preview/replay и отдельное создание на паузе."),
         h("textarea", { style: Object.assign({}, styles.input, { minHeight: 80 }), value: importText, maxLength: 500000, "aria-label": "Grafana-native JSON", onChange: event => setImportText(event.target.value) }),
-        h("button", { type: "button", style: styles.smallButton, disabled: blocked || !importText, onClick: () => run(async () => { const draft = alertingTools.importDraft(importText, "ai-" + crypto.randomUUID().replace(/-/g, "").slice(0, 28), queryTools.boundedSql); props.onImport(draft); }) }, "Проверить и открыть черновик")),
+        h("button", { type: "button", style: styles.smallButton, disabled: blocked || !importText, onClick: () => run(async () => { const draft = alertingTools.importDraft(importText, "ai-" + queryTools.uniqueId().replace(/-/g, "").slice(0, 28), queryTools.boundedSql); props.onImport(draft); }) }, "Проверить и открыть черновик")),
       h("button", { type: "button", style: styles.quietButton, disabled: blocked, onClick: () => run(async signal => { const policies = await grafanaRequest("/api/v1/provisioning/policies", { signal }); downloadAlertExport(policies, "grafana-notification-policy", true); }) }, "Экспорт policy YAML"),
       h("details", null, h("summary", { style: { cursor: "pointer" } }, "Локальный журнал / откат"), h("button", { type: "button", style: styles.smallButton, onClick: () => run(async () => setEvents(readAlertJournal())) }, "Загрузить журнал"),
         events.length ? h("div", null, h("button", { type: "button", style: styles.quietButton, onClick: () => downloadAlertExport(events, "grafana-local-audit") }, "Экспорт журнала"), events.slice().reverse().map((event, index) => h("div", { key: index, style: styles.context }, `${event.at} · ${event.actor?.login || "—"} · ${event.action} · ${event.status}`))) : null),
@@ -3218,11 +3272,15 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     const user = grafanaRuntime.config.bootData?.user || {}, role = user.orgRole || "Viewer";
     const [fields, setFields] = React.useState(() => ({ matchers: Object.entries(props.context.alerting.instances?.[0]?.labels || {}).filter(([name]) => !name.startsWith("__")).slice(0, 5).map(([name, value]) => ({ name, value, isRegex: false, isEqual: true })), startsAt: new Date(Date.now() + 1000).toISOString(), endsAt: new Date(Date.now() + 3600000).toISOString(), comment: "", createdBy: user.login || "" }));
     const [list, setList] = React.useState([]), [before, setBefore] = React.useState(), [preview, setPreview] = React.useState(), [confirmed, setConfirmed] = React.useState(false), [typed, setTyped] = React.useState(""), [busy, setBusy] = React.useState(false), [message, setMessage] = React.useState("");
+    const dateInputs = values => Object.fromEntries(['startsAt', 'endsAt'].map(name => [name, { value: queryTools.localDateTime(values[name]), badInput: false }]));
+    const [times, setTimes] = React.useState(() => dateInputs(fields));
+    const timeErrors = Object.fromEntries(['startsAt', 'endsAt'].map(name => [name, queryTools.localTimeError(times[name].value, times[name].badInput, true)]));
+    const invalidTime = Object.values(timeErrors).some(Boolean);
     const operation = React.useRef(); React.useEffect(() => () => operation.current?.abort(), []);
     const blocked = busy || props.busy;
-    function update(patch) { setFields(Object.assign({}, fields, patch)); setPreview(undefined); setConfirmed(false); }
+    function update(patch, raw) { setFields(value => Object.assign({}, value, patch)); setTimes(value => Object.assign({}, value, Object.fromEntries(['startsAt', 'endsAt'].filter(name => Object.hasOwn(patch, name)).map(name => [name, raw?.[name] || { value: queryTools.localDateTime(patch[name]), badInput: false }])))); setPreview(undefined); setConfirmed(false); }
     async function run(task) { if (operation.current) return; const controller = new AbortController(); operation.current = controller; setBusy(true); setMessage(""); try { await task(controller.signal); } catch (error) { setMessage(controller.signal.aborted ? "Операция остановлена. Если запись уже отправлена, проверьте silence в Grafana перед повтором." : formatError(error)); } finally { if (operation.current === controller) { operation.current = undefined; setBusy(false); } } }
-    function select(item) { setBefore(item); setFields({ id: item.id, matchers: item.matchers, startsAt: item.startsAt, endsAt: item.endsAt, comment: item.comment, createdBy: item.createdBy }); setPreview(undefined); setConfirmed(false); setTyped(""); }
+    function select(item) { setBefore(item); setFields({ id: item.id, matchers: item.matchers, startsAt: item.startsAt, endsAt: item.endsAt, comment: item.comment, createdBy: item.createdBy }); setTimes(dateInputs(item)); setPreview(undefined); setConfirmed(false); setTyped(""); }
     return h("details", { "data-testid": "tech-ai-alert-silences" }, h("summary", { style: { cursor: "pointer" } }, "Silence: подавление уведомлений"),
       h("div", { style: styles.context }, "Точные labels, до 7 дней, обязательный комментарий. Preview показывает текущие экземпляры; будущие совпадения тоже подавляются. API silence не имеет атомарной проверки версии."),
       h("button", { type: "button", style: styles.smallButton, disabled: blocked, "data-testid": "tech-ai-silences-load", onClick: () => run(async signal => { const value = await grafanaRequest("/api/alertmanager/grafana/api/v2/silences", { signal }); if (!Array.isArray(value)) throw Error("Неверный ответ silences"); setList(value); }) }, "Активные и предстоящие silence"),
@@ -3231,9 +3289,9 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       fields.matchers.map((matcher, index) => h("div", { key: index, style: styles.quickActions }, ["name", "value"].map(name => h("input", { key: name, style: Object.assign({}, styles.input, { width: "42%", minWidth: 0 }), "aria-label": "Matcher " + name + " " + index, value: matcher[name], disabled: blocked, onChange: event => update({ matchers: fields.matchers.map((item, i) => i === index ? Object.assign({}, item, { [name]: event.target.value }) : item) }) })), h("button", { type: "button", style: styles.quietButton, disabled: blocked, "aria-label": "Удалить matcher " + index, onClick: () => update({ matchers: fields.matchers.filter((_, i) => i !== index) }) }, "×"))),
       h("button", { type: "button", style: styles.quietButton, disabled: blocked || fields.matchers.length >= 20, onClick: () => update({ matchers: fields.matchers.concat({ name: "", value: "", isRegex: false, isEqual: true }) }) }, "Добавить label"),
       h('div', { style: styles.context }, 'Время браузера: ' + Intl.DateTimeFormat().resolvedOptions().timeZone + '. В Grafana передаётся UTC.'),
-      ["startsAt", "endsAt", "comment"].map(name => h("label", { key: name, style: styles.field }, ({ startsAt: "Начало", endsAt: "Окончание", comment: "Комментарий" })[name], h("input", { style: styles.input, type: name === 'comment' ? 'text' : 'datetime-local', step: name === 'comment' ? undefined : 1, value: name === 'comment' ? fields[name] : queryTools.localDateTime(fields[name]), disabled: blocked, "data-testid": "tech-ai-silence-" + name, onChange: event => update({ [name]: name === 'comment' ? event.target.value : queryTools.localDateTimeIso(event.target.value) }) }))),
+      ["startsAt", "endsAt", "comment"].map(name => h("label", { key: name, style: styles.field }, ({ startsAt: "Начало", endsAt: "Окончание", comment: "Комментарий" })[name], h("input", { style: styles.input, type: name === 'comment' ? 'text' : 'datetime-local', step: name === 'comment' ? undefined : 1, value: name === 'comment' ? fields[name] : times[name].value, disabled: blocked, 'aria-invalid': Boolean(timeErrors[name]), "data-testid": "tech-ai-silence-" + name, onChange: event => name === 'comment' ? update({ comment: event.target.value }) : update({ [name]: queryTools.localDateTimeIso(event.target.value) }, { [name]: { value: event.target.value, badInput: event.target.validity.badInput } }) }), timeErrors[name] ? h('span', { role: 'alert', 'data-testid': 'tech-ai-silence-time-error-' + name }, timeErrors[name]) : null)),
       h('div', { style: styles.quickActions }, [1, 4, 24].map(hours => h('button', { key: hours, type: 'button', style: styles.quietButton, disabled: blocked, 'data-testid': 'tech-ai-silence-duration-' + hours, onClick: () => { const now = Date.now(); update({ startsAt: before ? fields.startsAt : new Date(now).toISOString(), endsAt: new Date(now + hours * 3600000).toISOString() }); } }, (before ? 'До: сейчас + ' : '+') + hours + ' ч'))),
-      h("button", { type: "button", style: styles.smallButton, disabled: blocked, "data-testid": "tech-ai-silence-preview", onClick: () => run(async signal => { setPreview(await alertingTools.previewSilence(grafanaRequest, fields, { signal })); setConfirmed(false); }) }, "Preview затронутых алертов"),
+      h("button", { type: "button", style: styles.smallButton, disabled: blocked || invalidTime, "data-testid": "tech-ai-silence-preview", onClick: () => { if (!invalidTime) run(async signal => { setPreview(await alertingTools.previewSilence(grafanaRequest, fields, { signal })); setConfirmed(false); }); } }, "Preview затронутых алертов"),
       preview ? h("div", { "data-testid": "tech-ai-silence-impact" }, `Текущих экземпляров: ${preview.affected.length}. ${preview.limitation}`, h("details", null, h("summary", null, "Matchers и экземпляры"), h("pre", { style: styles.pre }, JSON.stringify({ before, after: preview.body, instances: preview.affected.map(item => item.labels) }, null, 2)))) : null,
       h("label", { style: styles.attachment }, h("input", { type: "checkbox", checked: confirmed, disabled: blocked, "data-testid": "tech-ai-silence-confirm", onChange: event => setConfirmed(event.target.checked) }), " Подтверждаю matchers, срок и подавление совпадающих уведомлений."),
       h("button", { type: "button", style: styles.smallButton, disabled: blocked || !preview || !confirmed || !["Admin", "Editor"].includes(role), "data-testid": "tech-ai-silence-apply", onClick: () => run(async signal => {
@@ -3288,15 +3346,19 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
 
   function IncidentChangesPanel(props) {
     const [report, setReport] = React.useState(), [error, setError] = React.useState(""), [busy, setBusy] = React.useState(false), [incidentAt, setIncidentAt] = React.useState();
+    const [badTime, setBadTime] = React.useState(false);
     const operation = React.useRef(); React.useEffect(() => () => operation.current?.abort(), []);
     const starts = (props.context.alerting?.instances || []).map(item => item.startsAt).filter(value => Number.isFinite(Date.parse(value)) && Date.parse(value) <= Date.now()).sort();
-    const inputTime = incidentAt === undefined ? starts[0] || "" : incidentAt;
+    const inputTime = incidentAt === undefined ? queryTools.localDateTime(starts[0]) : incidentAt;
+    const timeError = queryTools.localTimeError(inputTime, badTime, false);
     return h("details", { "data-testid": "tech-ai-incident-changes" }, h("summary", { style: { cursor: "pointer" } }, "Что изменилось перед срабатыванием"),
       h("div", { style: styles.context }, "Сохранённые SQL/панели/переменные: версия до указанного момента → текущая. Без времени — предыдущая доступная версия. Изменения не доказывают причину инцидента."),
-      h("label", { style: styles.field }, 'Начало инцидента · ' + Intl.DateTimeFormat().resolvedOptions().timeZone, h("input", { style: styles.input, type: 'datetime-local', step: 1, value: queryTools.localDateTime(inputTime), disabled: busy, "data-testid": "tech-ai-incident-at", onChange: event => { setIncidentAt(queryTools.localDateTimeIso(event.target.value)); setReport(undefined); } })),
-      h("button", { type: "button", style: styles.smallButton, disabled: busy || props.busy || !props.context.dashboardUid, "data-testid": "tech-ai-incident-load", onClick: async () => {
+      h("label", { style: styles.field }, 'Начало инцидента · ' + Intl.DateTimeFormat().resolvedOptions().timeZone, h("input", { style: styles.input, type: 'datetime-local', step: 1, value: inputTime, disabled: busy, 'aria-invalid': Boolean(timeError), "data-testid": "tech-ai-incident-at", onChange: event => { setIncidentAt(event.target.value); setBadTime(event.target.validity.badInput); setReport(undefined); } })),
+      timeError ? h('div', { role: 'alert', 'data-testid': 'tech-ai-incident-time-error' }, timeError) : null,
+      h("button", { type: "button", style: styles.smallButton, disabled: busy || props.busy || !props.context.dashboardUid || Boolean(timeError), "data-testid": "tech-ai-incident-load", onClick: async () => {
+        if (timeError) return;
         const controller = new AbortController(); operation.current = controller; setBusy(true); setError(""); setReport(undefined);
-        try { const value = await readIncidentChanges(props.context, { signal: controller.signal, incidentAt: inputTime ? Date.parse(inputTime) : undefined }); if (!controller.signal.aborted) { setReport(value); props.onEvidence(value); } }
+        try { const value = await readIncidentChanges(props.context, { signal: controller.signal, incidentAt: inputTime ? Date.parse(queryTools.localDateTimeIso(inputTime)) : undefined }); if (!controller.signal.aborted) { setReport(value); props.onEvidence(value); } }
         catch (reason) { if (!controller.signal.aborted) setError(formatError(reason)); }
         finally { if (operation.current === controller) { operation.current = undefined; setBusy(false); } }
       } }, "Сравнить сохранённые версии"),
@@ -3326,7 +3388,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
       const atSave = { from: rangeMilliseconds(context.timeRange?.from, "now-1h"), to: rangeMilliseconds(context.timeRange?.to, "now") };
       const requested = props.history.slice().reverse().find(item => item.role === "user" && item.absoluteRange)?.absoluteRange;
       const range = requested ? { from: requested.from, to: requested.to } : Object.assign({}, atSave);
-      return conversationTools.cleanCase(sanitizeForAI({ schemaVersion: 1, id: crypto.randomUUID(), title: title.trim() || context.alerting?.rule?.title || context.dashboardTitle || "Расследование Grafana", updatedAt: new Date().toISOString(), context: { dashboardUid: context.dashboardUid, dashboardTitle: context.dashboardTitle, panelId: context.panel?.id, pageUrl: context.pageUrl, alertUid: context.alerting?.ruleUid, range, rangeAtSave: atSave, rangeBasis: requested ? "last user request" : "resolved at save", queriesBasis: "current selected query texts at save, not execution proof", variables: context.variables, queries: availablePanels(context).map(panel => ({ panelId: panel.id, title: panel.title, datasource: panel.datasource, targets: (panel.targets || []).map(target => Object.fromEntries(["refId", "datasource", "rawSql", "expr", "query", "format"].filter(key => target[key] !== undefined).map(key => [key, target[key]]))) })), pageType: context.isAlerting ? "alerting" : context.isExplore ? "explore" : "dashboard" }, summary: String(last?.content || "").slice(0, 6000), evidence: props.evidence, messages: props.history.filter(item => !item.local).slice(-40).map(item => ({ role: item.role, content: item.content, note: item.note, steps: item.steps, sentAt: item.sentAt, absoluteRange: item.absoluteRange ? Object.assign({}, item.absoluteRange) : undefined })) }));
+      return conversationTools.cleanCase(sanitizeForAI({ schemaVersion: 1, id: queryTools.uniqueId(), title: title.trim() || context.alerting?.rule?.title || context.dashboardTitle || "Расследование Grafana", updatedAt: new Date().toISOString(), context: { dashboardUid: context.dashboardUid, dashboardTitle: context.dashboardTitle, panelId: context.panel?.id, pageUrl: context.pageUrl, alertUid: context.alerting?.ruleUid, range, rangeAtSave: atSave, rangeBasis: requested ? "last user request" : "resolved at save", queriesBasis: "current selected query texts at save, not execution proof", variables: context.variables, queries: availablePanels(context).map(panel => ({ panelId: panel.id, title: panel.title, datasource: panel.datasource, targets: (panel.targets || []).map(target => Object.fromEntries(["refId", "datasource", "rawSql", "expr", "query", "format"].filter(key => target[key] !== undefined).map(key => [key, target[key]]))) })), pageType: context.isAlerting ? "alerting" : context.isExplore ? "explore" : "dashboard" }, summary: String(last?.content || "").slice(0, 6000), evidence: props.evidence, messages: props.history.filter(item => !item.local).slice(-40).map(item => ({ role: item.role, content: item.content, note: item.note, steps: item.steps, sentAt: item.sentAt, absoluteRange: item.absoluteRange ? Object.assign({}, item.absoluteRange) : undefined })) }));
     }
     const shown = records.filter(item => (item.title + " " + (item.context?.dashboardUid || "") + " " + (item.context?.alertUid || "")).toLowerCase().includes(search.toLowerCase()));
     return h("details", { "data-testid": "tech-ai-case-notebook", style: { maxHeight: "45dvh", overflowY: "auto" } }, h("summary", { style: { cursor: "pointer" } }, "Расследования и кейсы"),
@@ -3358,7 +3420,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
           } catch (error) { setMessage("Запись не подтверждена: " + formatError(error) + ". Проверьте аннотации перед повтором."); setAnnotationConfirmed(false); }
           finally { operation.current = undefined; setBusy(false); }
         } }, "Создать индекс-аннотацию"), h("button", { type: "button", style: styles.quietButton, onClick: () => setAnnotation(undefined) }, "Отмена")) : null,
-      h("details", null, h("summary", null, "Импорт кейса JSON"), h("textarea", { style: styles.input, maxLength: 200000, value: importText, "aria-label": "JSON кейса", onChange: event => setImportText(event.target.value) }), h("button", { type: "button", style: styles.smallButton, disabled: !enabled || !importText || !key, onClick: () => local(() => { if (importText.length > 200000) throw Error("Импорт до 200 КБ"); const item = conversationTools.cleanCase(sanitizeForAI(JSON.parse(importText))); item.id = crypto.randomUUID(); item.updatedAt = new Date().toISOString(); setRecords(conversationTools.storeCase(localStorage, key, item, enabled)); setImportText(""); setMessage("Кейс импортирован с новым ID, без исполнения действий."); }) }, "Импортировать локально")),
+      h("details", null, h("summary", null, "Импорт кейса JSON"), h("textarea", { style: styles.input, maxLength: 200000, value: importText, "aria-label": "JSON кейса", onChange: event => setImportText(event.target.value) }), h("button", { type: "button", style: styles.smallButton, disabled: !enabled || !importText || !key, onClick: () => local(() => { if (importText.length > 200000) throw Error("Импорт до 200 КБ"); const item = conversationTools.cleanCase(sanitizeForAI(JSON.parse(importText))); item.id = queryTools.uniqueId(); item.updatedAt = new Date().toISOString(); setRecords(conversationTools.storeCase(localStorage, key, item, enabled)); setImportText(""); setMessage("Кейс импортирован с новым ID, без исполнения действий."); }) }, "Импортировать локально")),
       h("button", { type: "button", style: styles.quietButton, disabled: !key, onClick: () => setClear(true) }, "Очистить все мои кейсы"),
       clear ? h("div", null, h("button", { type: "button", style: styles.smallButton, onClick: () => local(() => { localStorage.removeItem(key); setRecords([]); setClear(false); setMessage("Локальные кейсы этого пользователя/организации удалены. Аннотации в Grafana сохраняются."); }) }, "Подтвердить очистку локальных кейсов"), h("button", { type: "button", style: styles.quietButton, onClick: () => setClear(false) }, "Отмена")) : null,
       message ? h("div", { role: "status", "data-testid": "tech-ai-case-status", style: { overflowWrap: "anywhere" } }, message) : null);
@@ -4134,7 +4196,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     }
 
     function repairProposal(validation) {
-      setInput(redactString('Исправь проверенный запрос по фактической ошибке datasource. Сохрани смысл и datasource. Верни исправленный запрос; ничего не применяй.\nПериод проверки: ' + JSON.stringify(validation.range) + '\n' + JSON.stringify(validation.details.filter(item => item.error).map(item => ({ refId: item.refId, query: item.query, error: item.error })), null, 2)));
+      setInput(repairPrompt(validation, settings));
       setTab('chat'); setSendPreview(undefined);
       requestAnimationFrame(() => composerRef.current?.focus());
     }
@@ -5132,7 +5194,7 @@ define(["@grafana/data", "@grafana/runtime", "react", "react-dom", "./attachment
     plugin,
     __launcher: { canMountReact, mountReact, openDrawer, openAssistant, closeDrawer },
     __context: { pageContextKey, watchPageContext, contextDescriptor, contextDifference, contextRangeLabel, sentContextDetails, sentContextCaption },
-    __features: { codeProposal, QueryDiff, applyDashboardProposal, AlertNotificationPanel, IncidentChangesPanel, CaseNotebook, readIncidentChanges, AlertOperations, AlertSilences, AlertDraftEditor, CodeBlock, AlertAuditPanel, AlertContextCard, datasourceForLanguage, exploreQueryFor, sourceIntervalMs, peakWindow, recommendedPeakWindow, aroundTimeRange, grafanaRequest, executeSchemaTool, executeQueryTool, parseExplorePanes, mergeExtensionQueries, loadContext, validateDashboardProposal, loadInvestigationEvents, createDashboardAnnotation, capturePanelCanvases, ProposalView },
+    __features: { repairPrompt, proposalSqlTargets, codeProposalCandidates, codeProposal, QueryDiff, applyDashboardProposal, AlertNotificationPanel, IncidentChangesPanel, CaseNotebook, readIncidentChanges, AlertOperations, AlertSilences, AlertDraftEditor, CodeBlock, AlertAuditPanel, AlertContextCard, datasourceForLanguage, exploreQueryFor, sourceIntervalMs, peakWindow, recommendedPeakWindow, aroundTimeRange, grafanaRequest, executeSchemaTool, executeQueryTool, parseExplorePanes, mergeExtensionQueries, loadContext, validateDashboardProposal, loadInvestigationEvents, createDashboardAnnotation, capturePanelCanvases, ProposalView },
     // Внутренние функции для unit-тестов (test/unit.test.js) и evals/run.js; Grafana это поле игнорирует.
 __test: { limitAnswerCharts, panelUnit, saveHistory, chartsForContext, chartTime, fallbackMarkdown, markdownHtml, linkPanelTitles, sparkPoints, pickAnswerCharts, formatChartValue, summarizeSeries, findPanelElement, contextSummary, errorPresentation, presentationCss, loadPanelSelection, savePanelSelection, joinEndpoint, summarizeQueryResult, dataLimits, shrinkPanelData, apiHistory, panelDataStats, snapshotKey, stripPendingQueries, loadPanelData, investigationEstimate, diagnosticPayload, loadCalibration, recordCalibration, configurationProfiles, profileValues, splitThink, readEventStream, applyChoice, emptyAccumulator, parseTextToolCalls, parseDashboardProposal, flattenPanels, fitContext, planRequest, splitContent, sanitizeForAI, redactString, formatError, deepReplace, stepSummary, requestBody, exploreUrl, currentVariables, historyKey, proxyRoute, modelsRoute, shouldRetryWithoutStream, postChat, runAssistant, limitedRange, isStreamUnsupported, systemContent, defaults, positiveInt, runDatasourceQueries, resolveContextDelivery, availablePanels, selectContextPanels, attachContextDocument, screenshotErrorNote, quickPrompts, rawBase64, imageUserMessage, imageTestCases, imageTransportLabels, drawerScopedCss, styles },
   };

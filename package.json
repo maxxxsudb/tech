@@ -1,7 +1,7 @@
 {
   "name": "tech-ai-assistant-build",
   "private": true,
-  "version": "0.9.10",
+  "version": "0.9.11",
   "engines": { "node": ">=22" },
   "scripts": { "protect": "node scripts/protect.cjs", "test": "node --test test/*.test.js", "check": "node scripts/check-release.cjs" },
   "devDependencies": {

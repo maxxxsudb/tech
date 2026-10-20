@@ -46,6 +46,19 @@
     const d = new Date(value), normalized = value.length === 16 ? value + ':00' : value;
     return Number.isFinite(d.getTime()) && localDateTime(d) === normalized ? d.toISOString() : '';
   }
+  function uniqueId(cryptoApi = globalThis.crypto) {
+    if (typeof cryptoApi?.randomUUID === 'function') return cryptoApi.randomUUID();
+    if (typeof cryptoApi?.getRandomValues !== 'function') throw Error('Браузер не поддерживает генерацию случайных ID');
+    const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+    const hex = Array.from(bytes, n => n.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+  }
+  function localTimeError(raw, badInput, required) {
+    if (badInput) return 'Введите дату и время полностью.';
+    if (!raw) return required ? 'Укажите дату и время.' : '';
+    return localDateTimeIso(raw) ? '' : 'Это время не существует в часовом поясе браузера или дата некорректна.';
+  }
   function mergeSelectedTargets(current, proposed, selected) {
     const ids = new Set(selected);
     const result = current.slice();
@@ -110,7 +123,7 @@
     const tokens = sqlTokens(text);
     if (!['select', 'with'].includes(tokens[0]?.value) || tokens[0].quoted) throw new Error('SQL-инструмент выполняет только SELECT или читающий WITH');
     const forbidden = new Set(['insert', 'update', 'delete', 'merge', 'into', 'copy', 'call', 'do', 'create', 'alter', 'drop', 'truncate', 'grant', 'revoke', 'vacuum', 'analyze', 'explain', 'set', 'reset', 'lock', 'listen', 'notify', 'unlisten', 'execute', 'prepare', 'deallocate', 'refresh', 'recursive', 'for']);
-    const functions = new Set(('count sum avg min max abs round floor ceil ceiling trunc sqrt power mod coalesce nullif greatest least cast extract date_part date_trunc date_bin to_timestamp to_char to_date now current_timestamp timezone age make_interval lower upper length char_length substring substr trim btrim ltrim rtrim replace concat concat_ws split_part strpos position regexp_replace regexp_match regexp_matches bool_and bool_or every array_agg string_agg json_agg jsonb_agg json_build_object jsonb_build_object json_extract_path_text jsonb_extract_path_text json_array_length jsonb_array_length unnest generate_series percentile_cont percentile_disc mode stddev stddev_pop stddev_samp variance var_pop var_samp row_number rank dense_rank lag lead first_value last_value nth_value ntile numeric decimal varchar char text date timestamp timestamptz time interval smallint integer bigint int float float4 float8 boolean __timefrom __timeto __unixepochfrom __unixepochto __timefilter __timegroup __timegroupalias __time __timeepoch __unixepochfilter __unixepochgroup __unixepochgroupalias').split(' '));
+    const functions = new Set(('to_json to_jsonb json_build_array jsonb_build_array json_object_agg jsonb_object_agg json_object_keys jsonb_object_keys json_each jsonb_each json_each_text jsonb_each_text json_array_elements jsonb_array_elements json_array_elements_text jsonb_array_elements_text jsonb_path_query jsonb_path_query_array jsonb_path_query_first jsonb_path_exists jsonb_path_match json_typeof jsonb_typeof array_length array_ndims array_dims cardinality array_position array_positions array_remove array_replace array_to_string string_to_array regexp_split_to_array regexp_split_to_table format initcap left right reverse repeat translate ascii chr octet_length bit_length encode decode md5 date_trunc isfinite count sum avg min max abs round floor ceil ceiling trunc sqrt power mod coalesce nullif greatest least cast extract date_part date_trunc date_bin to_timestamp to_char to_date now current_timestamp timezone age make_interval lower upper length char_length substring substr trim btrim ltrim rtrim replace concat concat_ws split_part strpos position regexp_replace regexp_match regexp_matches bool_and bool_or every array_agg string_agg json_agg jsonb_agg json_build_object jsonb_build_object json_extract_path_text jsonb_extract_path_text json_array_length jsonb_array_length unnest generate_series percentile_cont percentile_disc mode stddev stddev_pop stddev_samp variance var_pop var_samp row_number rank dense_rank lag lead first_value last_value nth_value ntile numeric decimal varchar char text date timestamp timestamptz time interval smallint integer bigint int float float4 float8 boolean __timefrom __timeto __unixepochfrom __unixepochto __timefilter __timegroup __timegroupalias __time __timeepoch __unixepochfilter __unixepochgroup __unixepochgroupalias').split(' '));
     const syntax = new Set(['as', 'in', 'not', 'over', 'filter', 'within', 'group', 'by', 'case', 'between', 'like', 'ilike', 'is', 'values', 'distinct', 'select', 'from', 'where', 'and', 'or', 'on', 'having', 'exists', 'any', 'all', 'when', 'then', 'else', 'join', 'lateral', 'using', 'union', 'intersect', 'except']);
     for (let i = 0; i < tokens.length; i++) {
       const { value, quoted } = tokens[i];
@@ -166,5 +179,5 @@
     const prev = text(vars(before)), curr = text(vars(after));
     return { panels: changed.slice(0, 50), totalChangedPanels: changed.length, truncated: changed.length > 50 || prev.length > 4000 || curr.length > 4000 || changed.some(panel => panel.changes.some(change => change.truncated) || panel.queries.some(query => query.truncated)), variables: prev === curr ? null : { before: prev.slice(0, 4000), after: curr.slice(0, 4000), truncated: prev.length > 4000 || curr.length > 4000 }, settings: ["title", "timezone", "time", "refresh"].filter(key => text(before[key]) !== text(after[key])).map(key => ({ field: key, before: before[key], after: after[key] })) };
   }
-  return { expression, targetId, diffLines, foldDiff, localDateTime, localDateTimeIso, mergeSelectedTargets, diffTargetsList, selectedMergedTargets, boundedSql, postgresSchemaQuery, sqlFeedback, dashboardDiff };
+  return { expression, targetId, diffLines, foldDiff, localDateTime, localDateTimeIso, uniqueId, localTimeError, mergeSelectedTargets, diffTargetsList, selectedMergedTargets, boundedSql, postgresSchemaQuery, sqlFeedback, dashboardDiff };
 });
